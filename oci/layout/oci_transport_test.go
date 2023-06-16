@@ -223,6 +223,131 @@ func refToTempOCI(t *testing.T) (types.ImageReference, string) {
 	return ref, tmpDir
 }
 
+func refToTempOCI_withDescriptorAndConfigAndLayers(t *testing.T) (types.ImageReference, string, *[]string) {
+	tmpDir := t.TempDir()
+	m := `{
+		"schemaVersion": 2,
+		"manifests": [
+		{
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"size": 7143,
+			"digest": "sha256:9f5bc47a3493b19db78373ba8964575de7d1e7afa4d88aab58ea30b1b3fe0725",
+			"platform": {
+				"architecture": "ppc64le",
+				"os": "linux"
+			},
+			"annotations": {
+				"org.opencontainers.image.ref.name": "imageValue"
+			}
+		}
+		]
+	}
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "index.json"), []byte(m), 0644)
+	require.NoError(t, err)
+
+	err = os.MkdirAll(filepath.Join(tmpDir, "blobs", "sha256"), 0777)
+	require.NoError(t, err)
+
+	blobs := make([]string, 4)
+
+	d := `{
+		"schemaVersion": 2,
+		"mediaType": "application/vnd.oci.image.manifest.v1+json",
+		"config": {
+		  "mediaType": "application/vnd.oci.image.config.v1+json",
+		  "digest": "sha256:830ed4af117f2d78d7164d9bc2e99e082eeb7158bbe26bc5ebd953bb080e0574",
+		  "size": 1134
+		},
+		"layers": [
+		  {
+			"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+			"digest": "sha256:ec01cbee98595daa0f2e63e23a2a9a86e7d88ac1979707a6e25ebb47300b71ab",
+			"size": 30178543
+		  },
+		  {
+			"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+			"digest": "sha256:c8c043669210c4732c37a122a709efa244131d87d7a99c2c19e732ae129e9ad1",
+			"size": 50641117
+		  }
+		],
+		"annotations": {
+		  "org.opencontainers.image.base.digest": "sha256:8622f7f97dfe4688cc71dd721aec48eacecc38f37ab10f4454e8978baa659ab5",
+		  "org.opencontainers.image.base.name": "docker.io/library/debian:12.0-slim"
+		}
+	  }
+`
+	path := filepath.Join(tmpDir, "blobs", "sha256", "9f5bc47a3493b19db78373ba8964575de7d1e7afa4d88aab58ea30b1b3fe0725")
+	err = os.WriteFile(path, []byte(d), 0644)
+	require.NoError(t, err)
+	blobs = append(blobs, path)
+
+	c := `{
+		"created": "2023-06-13T14:06:44.892188935Z",
+		"architecture": "amd64",
+		"os": "linux",
+		"config": {
+		  "Env": [
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		  ],
+		  "Cmd": [
+			"bash"
+		  ],
+		  "Labels": {
+			"io.buildah.version": "1.29.0"
+		  }
+		},
+		"rootfs": {
+		  "type": "layers",
+		  "diff_ids": [
+			"sha256:ac4d164fef90ff58466b67e23deb79a47b5abd30af9ebf1735b57da6e4af1323",
+			"sha256:3f47a15f8d97366da8fdea6b70c8c32142160fe74c857e774ec88450762658f4"
+		  ]
+		},
+		"history": [
+		  {
+			"created": "2023-06-12T23:20:42.332572577Z",
+			"created_by": "/bin/sh -c #(nop) ADD file:ba1250b6ecd5dd09d4914189d72741c2817988994e7da514bf62be439a34bdb5 in / "
+		  },
+		  {
+			"created": "2023-06-12T23:20:42.679052308Z",
+			"created_by": "/bin/sh -c #(nop)  CMD [\"bash\"]",
+			"empty_layer": true
+		  },
+		  {
+			"created": "2023-06-13T14:06:42.991853146Z",
+			"created_by": "/bin/sh -c apt update     && apt install --no-install-recommends -y curl httpie dnsutils traceroute     && apt-get clean     && rm -rf /var/lib/apt/lists/*",
+			"comment": "FROM docker.io/library/debian:12.0-slim"
+		  },
+		  {
+			"created": "2023-06-13T14:06:44.892481037Z",
+			"created_by": "/bin/sh -c #(nop) CMD [\"bash\"]",
+			"comment": "FROM 8e66427ef33c",
+			"empty_layer": true
+		  }
+		]
+	  }
+`
+	path = filepath.Join(tmpDir, "blobs", "sha256", "830ed4af117f2d78d7164d9bc2e99e082eeb7158bbe26bc5ebd953bb080e0574")
+	err = os.WriteFile(path, []byte(c), 0644)
+	require.NoError(t, err)
+	blobs = append(blobs, path)
+
+	l := "junk"
+	path = filepath.Join(tmpDir, "blobs", "sha256", "ec01cbee98595daa0f2e63e23a2a9a86e7d88ac1979707a6e25ebb47300b71ab")
+	err = os.WriteFile(path, []byte(l), 0644)
+	require.NoError(t, err)
+	blobs = append(blobs, path)
+	path = filepath.Join(tmpDir, "blobs", "sha256", "c8c043669210c4732c37a122a709efa244131d87d7a99c2c19e732ae129e9ad1")
+	err = os.WriteFile(path, []byte(l), 0644)
+	require.NoError(t, err)
+	blobs = append(blobs, path)
+
+	ref, err := NewReference(tmpDir, "imageValue")
+	require.NoError(t, err)
+	return ref, tmpDir, &blobs
+}
+
 func TestReferenceTransport(t *testing.T) {
 	ref, _ := refToTempOCI(t)
 	assert.Equal(t, Transport, ref.Transport())
@@ -319,9 +444,51 @@ func TestReferenceNewImageDestination(t *testing.T) {
 }
 
 func TestReferenceDeleteImage(t *testing.T) {
-	ref, _ := refToTempOCI(t)
+	ref, _, blobs := refToTempOCI_withDescriptorAndConfigAndLayers(t)
 	err := ref.DeleteImage(context.Background(), nil)
+	// Check that all blobs were deleted
+	assert.NoError(t, err)
+	for _, v := range *blobs {
+		_, err = os.Stat(v)
+		require.True(t, os.IsNotExist(err))
+	}
+	// Check that the index doesn't contain the reference anymore
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	assert.NoError(t, err)
+	for _, v := range index.Manifests {
+		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
+			assert.Fail(t, "image still present in the index after deletion")
+		}
+	}
+}
+
+func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
+	_, tmpDir, _ := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+	ref, err := NewReference(tmpDir, "does-not:exist")
+	assert.NoError(t, err)
+	err = ref.DeleteImage(context.Background(), nil)
 	assert.Error(t, err)
+}
+
+func TestReferenceDeleteImage_someLayersAreReferencedByOtherImages(t *testing.T) {
+	t.Skip("not implemented yet")
+}
+
+// TODO not sure if it's possible to check if a container is running with that image...
+func TestReferenceDeleteImage_imageIsUsed(t *testing.T) {
+	t.Skip("not implemented yet")
+}
+
+// TODO Kind of a weird case, but getManifestDescriptor handles this case for some reason
+func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
+	t.Skip("not implemented yet")
+	// _, tmpDir, _ := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+	// ref, err := NewReference(tmpDir, "")
+	// assert.NoError(t, err)
+	// err = ref.DeleteImage(context.Background(), nil)
+	// assert.Error(t, err)
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {

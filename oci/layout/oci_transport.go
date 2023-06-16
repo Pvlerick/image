@@ -204,6 +204,25 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
+func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
+	manifestPath, err := ref.blobPath(descriptor.Digest, "")
+	if err != nil {
+		return nil, err
+	}
+
+	manifestJSON, err := os.Open(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	defer manifestJSON.Close()
+
+	manifest := &imgspecv1.Manifest{}
+	if err := json.NewDecoder(manifestJSON).Decode(manifest); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
 // LoadManifestDescriptor loads the manifest descriptor to be used to retrieve the image name
 // when pulling an image
 func LoadManifestDescriptor(imgRef types.ImageReference) (imgspecv1.Descriptor, error) {
@@ -228,7 +247,55 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
-	return errors.New("Deleting images not implemented for oci: images")
+	// Get the manifest for the image
+	descriptor, err := ref.getManifestDescriptor()
+	if err != nil {
+		return err
+	}
+
+	manifest, err := ref.getManifest(descriptor)
+	if err != nil {
+		return err
+	}
+
+	// Delete all blobs
+	for _, d := range append(manifest.Layers, manifest.Config, descriptor) {
+		blobPath, err := ref.blobPath(d.Digest, "")
+		if err != nil {
+			return err
+		}
+		err = os.Remove(blobPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Update the index
+	index, err := ref.getIndex()
+	if err != nil {
+		return err
+	}
+
+	newManifests := make([]imgspecv1.Descriptor, len(index.Manifests)-1)
+	for i, v := range index.Manifests {
+		if v.Annotations[imgspecv1.AnnotationRefName] != ref.image {
+			newManifests[i] = v
+		}
+	}
+	index.Manifests = newManifests
+
+	indexInfo, err := os.Stat(ref.indexPath())
+	if err != nil {
+		return err
+	}
+
+	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY, indexInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer indexJSON.Close()
+
+	return json.NewEncoder(indexJSON).Encode(index)
 }
 
 // ociLayoutPath returns a path for the oci-layout within a directory using OCI conventions.
