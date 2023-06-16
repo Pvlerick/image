@@ -204,6 +204,25 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
+func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
+	manifestPath, err := ref.blobPath(descriptor.Digest, "")
+	if err != nil {
+		return imgspecv1.Manifest{}, err
+	}
+
+	manifestJSON, err := os.Open(manifestPath)
+	if err != nil {
+		return imgspecv1.Manifest{}, err
+	}
+	defer manifestJSON.Close()
+
+	manifest := &imgspecv1.Manifest{}
+	if err := json.NewDecoder(manifestJSON).Decode(manifest); err != nil {
+		return imgspecv1.Manifest{}, err
+	}
+	return *manifest, nil
+}
+
 // LoadManifestDescriptor loads the manifest descriptor to be used to retrieve the image name
 // when pulling an image
 func LoadManifestDescriptor(imgRef types.ImageReference) (imgspecv1.Descriptor, error) {
@@ -228,7 +247,75 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
-	return errors.New("Deleting images not implemented for oci: images")
+
+	// Get the manifest for the image
+	manifestDescriptor, err := ref.getManifestDescriptor()
+	if err != nil {
+		return err
+	}
+
+	manifest, err := ref.getManifest(manifestDescriptor)
+	if err != nil {
+		return err
+	}
+
+	// Get all the layers used by all other images
+	index, err := ref.getIndex()
+	if err != nil {
+		return err
+	}
+	layersUsedByOtherImages := make(map[digest.Digest]bool, len(index.Manifests))
+	for _, v := range index.Manifests {
+		if v.Digest != manifestDescriptor.Digest {
+			otherImageManifest, err := ref.getManifest(v)
+			if err != nil {
+				return err
+			}
+			for _, layer := range otherImageManifest.Layers {
+				layersUsedByOtherImages[layer.Digest] = true
+			}
+		}
+	}
+
+	// Delete all blobs
+	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers))
+	for _, layer := range manifest.Layers {
+		if !layersUsedByOtherImages[layer.Digest] {
+			blobsToDelete = append(blobsToDelete, layer.Digest)
+		}
+	}
+	for _, digest := range append(blobsToDelete, manifest.Config.Digest, manifestDescriptor.Digest) {
+		blobPath, err := ref.blobPath(digest, "")
+		if err != nil {
+			return err
+		}
+		err = os.Remove(blobPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Update the index
+	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+	for _, v := range index.Manifests {
+		if v.Digest != manifestDescriptor.Digest {
+			newManifests = append(newManifests, v)
+		}
+	}
+	index.Manifests = newManifests
+
+	indexInfo, err := os.Stat(ref.indexPath())
+	if err != nil {
+		return err
+	}
+
+	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer indexJSON.Close()
+
+	return json.NewEncoder(indexJSON).Encode(index)
 }
 
 // ociLayoutPath returns a path for the oci-layout within a directory using OCI conventions.
