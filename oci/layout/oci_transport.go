@@ -290,7 +290,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return err
 	}
 
-	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY, indexInfo.Mode())
+	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
 	if err != nil {
 		return err
 	}

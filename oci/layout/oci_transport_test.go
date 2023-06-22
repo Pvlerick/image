@@ -2,12 +2,15 @@ package layout
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	_ "github.com/containers/image/v5/internal/testing/explicitfilepath-tmpdir"
 	"github.com/containers/image/v5/types"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,131 +226,6 @@ func refToTempOCI(t *testing.T) (types.ImageReference, string) {
 	return ref, tmpDir
 }
 
-func refToTempOCI_withDescriptorAndConfigAndLayers(t *testing.T) (types.ImageReference, string, *[]string) {
-	tmpDir := t.TempDir()
-	m := `{
-		"schemaVersion": 2,
-		"manifests": [
-		{
-			"mediaType": "application/vnd.oci.image.manifest.v1+json",
-			"size": 7143,
-			"digest": "sha256:9f5bc47a3493b19db78373ba8964575de7d1e7afa4d88aab58ea30b1b3fe0725",
-			"platform": {
-				"architecture": "ppc64le",
-				"os": "linux"
-			},
-			"annotations": {
-				"org.opencontainers.image.ref.name": "imageValue"
-			}
-		}
-		]
-	}
-`
-	err := os.WriteFile(filepath.Join(tmpDir, "index.json"), []byte(m), 0644)
-	require.NoError(t, err)
-
-	err = os.MkdirAll(filepath.Join(tmpDir, "blobs", "sha256"), 0777)
-	require.NoError(t, err)
-
-	blobs := make([]string, 4)
-
-	d := `{
-		"schemaVersion": 2,
-		"mediaType": "application/vnd.oci.image.manifest.v1+json",
-		"config": {
-		  "mediaType": "application/vnd.oci.image.config.v1+json",
-		  "digest": "sha256:830ed4af117f2d78d7164d9bc2e99e082eeb7158bbe26bc5ebd953bb080e0574",
-		  "size": 1134
-		},
-		"layers": [
-		  {
-			"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-			"digest": "sha256:ec01cbee98595daa0f2e63e23a2a9a86e7d88ac1979707a6e25ebb47300b71ab",
-			"size": 30178543
-		  },
-		  {
-			"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-			"digest": "sha256:c8c043669210c4732c37a122a709efa244131d87d7a99c2c19e732ae129e9ad1",
-			"size": 50641117
-		  }
-		],
-		"annotations": {
-		  "org.opencontainers.image.base.digest": "sha256:8622f7f97dfe4688cc71dd721aec48eacecc38f37ab10f4454e8978baa659ab5",
-		  "org.opencontainers.image.base.name": "docker.io/library/debian:12.0-slim"
-		}
-	  }
-`
-	path := filepath.Join(tmpDir, "blobs", "sha256", "9f5bc47a3493b19db78373ba8964575de7d1e7afa4d88aab58ea30b1b3fe0725")
-	err = os.WriteFile(path, []byte(d), 0644)
-	require.NoError(t, err)
-	blobs = append(blobs, path)
-
-	c := `{
-		"created": "2023-06-13T14:06:44.892188935Z",
-		"architecture": "amd64",
-		"os": "linux",
-		"config": {
-		  "Env": [
-			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-		  ],
-		  "Cmd": [
-			"bash"
-		  ],
-		  "Labels": {
-			"io.buildah.version": "1.29.0"
-		  }
-		},
-		"rootfs": {
-		  "type": "layers",
-		  "diff_ids": [
-			"sha256:ac4d164fef90ff58466b67e23deb79a47b5abd30af9ebf1735b57da6e4af1323",
-			"sha256:3f47a15f8d97366da8fdea6b70c8c32142160fe74c857e774ec88450762658f4"
-		  ]
-		},
-		"history": [
-		  {
-			"created": "2023-06-12T23:20:42.332572577Z",
-			"created_by": "/bin/sh -c #(nop) ADD file:ba1250b6ecd5dd09d4914189d72741c2817988994e7da514bf62be439a34bdb5 in / "
-		  },
-		  {
-			"created": "2023-06-12T23:20:42.679052308Z",
-			"created_by": "/bin/sh -c #(nop)  CMD [\"bash\"]",
-			"empty_layer": true
-		  },
-		  {
-			"created": "2023-06-13T14:06:42.991853146Z",
-			"created_by": "/bin/sh -c apt update     && apt install --no-install-recommends -y curl httpie dnsutils traceroute     && apt-get clean     && rm -rf /var/lib/apt/lists/*",
-			"comment": "FROM docker.io/library/debian:12.0-slim"
-		  },
-		  {
-			"created": "2023-06-13T14:06:44.892481037Z",
-			"created_by": "/bin/sh -c #(nop) CMD [\"bash\"]",
-			"comment": "FROM 8e66427ef33c",
-			"empty_layer": true
-		  }
-		]
-	  }
-`
-	path = filepath.Join(tmpDir, "blobs", "sha256", "830ed4af117f2d78d7164d9bc2e99e082eeb7158bbe26bc5ebd953bb080e0574")
-	err = os.WriteFile(path, []byte(c), 0644)
-	require.NoError(t, err)
-	blobs = append(blobs, path)
-
-	l := "junk"
-	path = filepath.Join(tmpDir, "blobs", "sha256", "ec01cbee98595daa0f2e63e23a2a9a86e7d88ac1979707a6e25ebb47300b71ab")
-	err = os.WriteFile(path, []byte(l), 0644)
-	require.NoError(t, err)
-	blobs = append(blobs, path)
-	path = filepath.Join(tmpDir, "blobs", "sha256", "c8c043669210c4732c37a122a709efa244131d87d7a99c2c19e732ae129e9ad1")
-	err = os.WriteFile(path, []byte(l), 0644)
-	require.NoError(t, err)
-	blobs = append(blobs, path)
-
-	ref, err := NewReference(tmpDir, "imageValue")
-	require.NoError(t, err)
-	return ref, tmpDir, &blobs
-}
-
 func TestReferenceTransport(t *testing.T) {
 	ref, _ := refToTempOCI(t)
 	assert.Equal(t, Transport, ref.Transport())
@@ -443,22 +321,126 @@ func TestReferenceNewImageDestination(t *testing.T) {
 	defer dest.Close()
 }
 
-func TestReferenceDeleteImage(t *testing.T) {
-	ref, _, blobs := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+type fakeImageSpec struct {
+	name     string
+	manifest string
+	config   string
+	layers   []string
+}
 
-	err := ref.DeleteImage(context.Background(), nil)
-	assert.NoError(t, err)
+func generateOciIndexAndContent(t *testing.T, images ...fakeImageSpec) string {
+	tmpDir := t.TempDir()
+
+	// Create blobs dir - assumption: all the content is sha256 digest-ed
+	blobsDir := filepath.Join(tmpDir, "blobs", string(digest.SHA256))
+	err := os.MkdirAll(blobsDir, 0777)
+	require.NoError(t, err)
+
+	saveJson := func(path string, content any) {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+		require.NoError(t, err)
+		defer file.Close()
+
+		err = json.NewEncoder(file).Encode(content)
+		require.NoError(t, err)
+	}
+
+	indexManifests := make([]imgspecv1.Descriptor, 0, len(images))
+
+	for _, image := range images {
+		// Create the layers blobs
+		layers := make([]imgspecv1.Descriptor, 0, len(image.layers))
+
+		for _, layer := range image.layers {
+			layerDigest, err := digest.Parse(layer)
+			require.NoError(t, err)
+			path := filepath.Join(blobsDir, layerDigest.Hex())
+			content := []byte("ABCDEF")
+			err = os.WriteFile(path, content, 0644)
+			require.NoError(t, err)
+			layers = append(layers, imgspecv1.Descriptor{
+				MediaType: imgspecv1.MediaTypeImageLayerGzip,
+				Digest:    layerDigest,
+			})
+		}
+
+		// Create the config blob
+		configDigest, err := digest.Parse(image.config)
+		require.NoError(t, err)
+
+		config := imgspecv1.Descriptor{}
+		saveJson(filepath.Join(blobsDir, configDigest.Hex()), config)
+
+		// Create the manifest blob
+		manifestDigest, err := digest.Parse(image.manifest)
+		require.NoError(t, err)
+
+		manifest := imgspecv1.Manifest{
+			Versioned: specs.Versioned{SchemaVersion: 2},
+			MediaType: imgspecv1.MediaTypeImageManifest,
+			Config: imgspecv1.Descriptor{
+				MediaType: imgspecv1.MediaTypeImageConfig,
+				Digest:    configDigest,
+				Size:      10,
+			},
+			Layers: layers,
+		}
+
+		saveJson(filepath.Join(blobsDir, manifestDigest.Hex()), manifest)
+
+		// Populate the index
+		indexManifests = append(indexManifests, imgspecv1.Descriptor{
+			MediaType: imgspecv1.MediaTypeImageManifest,
+			Digest:    manifestDigest,
+			Annotations: map[string]string{
+				imgspecv1.AnnotationRefName: image.name,
+			},
+		})
+	}
+
+	// Create the index
+	index := imgspecv1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		Manifests: indexManifests,
+	}
+
+	saveJson(filepath.Join(tmpDir, "index.json"), index)
+
+	return tmpDir
+}
+
+func TestReferenceDeleteImage(t *testing.T) {
+	image := fakeImageSpec{
+		name:     "image-1:latest",
+		manifest: "sha256:7df521835a17f9308c7d89484c6f6c630f6d5ed7126df8485f0e6ec0ec1cc9bc",
+		config:   "sha256:d0cc41b6cef5cc972a521ce9b81995c39533f2430df03cb62f44799b15d21217",
+		layers: []string{
+			"sha256:ebfb402c523af279c1b58751b9c3c48d250906f4e57ef8af4fc0540e290281dc",
+			"sha256:f37ee95567a8ca93744f71634155b45ac405f509fa1e5d1a497b36a54619be56",
+		},
+	}
+
+	tmpDir := generateOciIndexAndContent(t, []fakeImageSpec{image}...)
+
+	ref, err := NewReference(tmpDir, image.name)
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.NoError(t, err)
 
 	// Check that all blobs were deleted
-	for _, v := range *blobs {
-		_, err = os.Stat(v)
-		require.True(t, os.IsNotExist(err))
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	blobDoesNotExist(t, blobsDir, image.manifest)
+	blobDoesNotExist(t, blobsDir, image.config)
+	for _, layer := range image.layers {
+		blobDoesNotExist(t, blobsDir, layer)
 	}
+
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
 	index, err := ociRef.getIndex()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	for _, v := range index.Manifests {
 		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
 			assert.Fail(t, "image still present in the index after deletion")
@@ -467,44 +449,149 @@ func TestReferenceDeleteImage(t *testing.T) {
 }
 
 func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
-	_, tmpDir, blobs := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+	image := fakeImageSpec{
+		name:     "image-1:latest",
+		manifest: "sha256:7df521835a17f9308c7d89484c6f6c630f6d5ed7126df8485f0e6ec0ec1cc9bc",
+		config:   "sha256:d0cc41b6cef5cc972a521ce9b81995c39533f2430df03cb62f44799b15d21217",
+		layers: []string{
+			"sha256:ebfb402c523af279c1b58751b9c3c48d250906f4e57ef8af4fc0540e290281dc",
+		},
+	}
+
+	tmpDir := generateOciIndexAndContent(t, []fakeImageSpec{image}...)
+
 	ref, err := NewReference(tmpDir, "")
 	require.NoError(t, err)
 
 	err = ref.DeleteImage(context.Background(), nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Check that all blobs were deleted
-	for _, v := range *blobs {
-		_, err = os.Stat(v)
-		require.True(t, os.IsNotExist(err))
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	blobDoesNotExist(t, blobsDir, image.manifest)
+	blobDoesNotExist(t, blobsDir, image.config)
+	for _, layer := range image.layers {
+		blobDoesNotExist(t, blobsDir, layer)
 	}
+
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
 	index, err := ociRef.getIndex()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	for _, v := range index.Manifests {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
+		if v.Annotations[imgspecv1.AnnotationRefName] == image.name {
 			assert.Fail(t, "image still present in the index after deletion")
 		}
 	}
 }
 
+func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImageInIndex(t *testing.T) {
+	images := []fakeImageSpec{
+		{
+			name:     "image-1:latest",
+			manifest: "sha256:7df521835a17f9308c7d89484c6f6c630f6d5ed7126df8485f0e6ec0ec1cc9bc",
+			config:   "sha256:d0cc41b6cef5cc972a521ce9b81995c39533f2430df03cb62f44799b15d21217",
+			layers: []string{
+				"sha256:ebfb402c523af279c1b58751b9c3c48d250906f4e57ef8af4fc0540e290281dc",
+			},
+		},
+		{
+			name:     "image-2:latest",
+			manifest: "sha256:b4679e9e04b749cab43f1534ae5c82a521b745c6346b90a7034ca72d3ed38beb",
+			config:   "sha256:eb6bea08ad372676ed419b424557f517e9b5190b0af38614cb30548908fcf794",
+			layers: []string{
+				"sha256:623802888f95381343c8511943d774b6ac96ff8710fc40b7b47845a50d038c2c",
+			},
+		},
+	}
+
+	tmpDir := generateOciIndexAndContent(t, images...)
+
+	ref, err := NewReference(tmpDir, "")
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.Error(t, err)
+}
+
 func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
-	_, tmpDir, _ := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+	image := fakeImageSpec{
+		name:     "image-1:latest",
+		manifest: "sha256:7df521835a17f9308c7d89484c6f6c630f6d5ed7126df8485f0e6ec0ec1cc9bc",
+		config:   "sha256:d0cc41b6cef5cc972a521ce9b81995c39533f2430df03cb62f44799b15d21217",
+		layers: []string{
+			"sha256:ebfb402c523af279c1b58751b9c3c48d250906f4e57ef8af4fc0540e290281dc",
+			"sha256:f37ee95567a8ca93744f71634155b45ac405f509fa1e5d1a497b36a54619be56",
+		},
+	}
+
+	tmpDir := generateOciIndexAndContent(t, []fakeImageSpec{image}...)
+
 	ref, err := NewReference(tmpDir, "does-not:exist")
 	assert.NoError(t, err)
+
 	err = ref.DeleteImage(context.Background(), nil)
 	assert.Error(t, err)
 }
 
 func TestReferenceDeleteImage_someLayersAreReferencedByOtherImages(t *testing.T) {
-	t.Skip("not implemented yet")
-}
+	const commonLayer = "sha256:bff18d814a6d85fb3ea9b1ee7271b831e204ff0bd88a17c4bfcf9a83ed07e8f8"
+	images := []fakeImageSpec{
+		{
+			name:     "image-1:latest",
+			manifest: "sha256:7df521835a17f9308c7d89484c6f6c630f6d5ed7126df8485f0e6ec0ec1cc9bc",
+			config:   "sha256:d0cc41b6cef5cc972a521ce9b81995c39533f2430df03cb62f44799b15d21217",
+			layers: []string{
+				"sha256:ebfb402c523af279c1b58751b9c3c48d250906f4e57ef8af4fc0540e290281dc",
+				commonLayer,
+				"sha256:f37ee95567a8ca93744f71634155b45ac405f509fa1e5d1a497b36a54619be56",
+			},
+		},
+		{
+			name:     "image-2:latest",
+			manifest: "sha256:b4679e9e04b749cab43f1534ae5c82a521b745c6346b90a7034ca72d3ed38beb",
+			config:   "sha256:eb6bea08ad372676ed419b424557f517e9b5190b0af38614cb30548908fcf794",
+			layers: []string{
+				"sha256:623802888f95381343c8511943d774b6ac96ff8710fc40b7b47845a50d038c2c",
+				commonLayer,
+				"sha256:66a79b735a97ede9e52267492df7c4a7ee6e287113efe3e7def0c6f73f158589",
+			},
+		},
+	}
 
-func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImage(t *testing.T) {
-	t.Skip("not implemented yet")
+	tmpDir := generateOciIndexAndContent(t, images...)
+
+	image := images[0]
+	ref, err := NewReference(tmpDir, image.name)
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.NoError(t, err)
+
+	// Check that all relevant blobs were deleted
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	blobDoesNotExist(t, blobsDir, image.manifest)
+	blobDoesNotExist(t, blobsDir, image.config)
+	blobDoesNotExist(t, blobsDir, image.layers[0])
+	blobDoesNotExist(t, blobsDir, image.layers[2])
+
+	// Check that the blob used by another image is still there
+	commonBlobDigest, err := digest.Parse(commonLayer)
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(blobsDir, commonBlobDigest.Algorithm().String(), commonBlobDigest.Hex()))
+	require.NoError(t, err)
+
+	// Check that the index doesn't contain the reference anymore
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	for _, v := range index.Manifests {
+		if v.Annotations[imgspecv1.AnnotationRefName] == image.name {
+			assert.Fail(t, "image still present in the index after deletion")
+		}
+	}
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {
@@ -551,4 +638,12 @@ func TestReferenceBlobPathInvalid(t *testing.T) {
 	require.True(t, ok)
 	_, err := ociRef.blobPath(hex, "")
 	assert.ErrorContains(t, err, "unexpected digest reference "+hex)
+}
+
+func blobDoesNotExist(t *testing.T, blobsDir string, blobDigest string) {
+	digest, err := digest.Parse(blobDigest)
+	require.NoError(t, err)
+	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
+	_, err = os.Stat(blobPath)
+	require.True(t, os.IsNotExist(err))
 }
