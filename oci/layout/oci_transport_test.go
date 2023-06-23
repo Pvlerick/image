@@ -503,6 +503,10 @@ func TestReferenceDeleteImage_someLayersAreReferencedByOtherImages(t *testing.T)
 	t.Skip("not implemented yet")
 }
 
+func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImage(t *testing.T) {
+	t.Skip("not implemented yet")
+}
+
 func TestReferenceOCILayoutPath(t *testing.T) {
 	ref, tmpDir := refToTempOCI(t)
 	ociRef, ok := ref.(ociReference)
