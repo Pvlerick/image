@@ -445,9 +445,36 @@ func TestReferenceNewImageDestination(t *testing.T) {
 
 func TestReferenceDeleteImage(t *testing.T) {
 	ref, _, blobs := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+
 	err := ref.DeleteImage(context.Background(), nil)
-	// Check that all blobs were deleted
 	assert.NoError(t, err)
+
+	// Check that all blobs were deleted
+	for _, v := range *blobs {
+		_, err = os.Stat(v)
+		require.True(t, os.IsNotExist(err))
+	}
+	// Check that the index doesn't contain the reference anymore
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	assert.NoError(t, err)
+	for _, v := range index.Manifests {
+		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
+			assert.Fail(t, "image still present in the index after deletion")
+		}
+	}
+}
+
+func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
+	_, tmpDir, blobs := refToTempOCI_withDescriptorAndConfigAndLayers(t)
+	ref, err := NewReference(tmpDir, "")
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	assert.NoError(t, err)
+
+	// Check that all blobs were deleted
 	for _, v := range *blobs {
 		_, err = os.Stat(v)
 		require.True(t, os.IsNotExist(err))
@@ -474,21 +501,6 @@ func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
 
 func TestReferenceDeleteImage_someLayersAreReferencedByOtherImages(t *testing.T) {
 	t.Skip("not implemented yet")
-}
-
-// TODO not sure if it's possible to check if a container is running with that image...
-func TestReferenceDeleteImage_imageIsUsed(t *testing.T) {
-	t.Skip("not implemented yet")
-}
-
-// TODO Kind of a weird case, but getManifestDescriptor handles this case for some reason
-func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
-	t.Skip("not implemented yet")
-	// _, tmpDir, _ := refToTempOCI_withDescriptorAndConfigAndLayers(t)
-	// ref, err := NewReference(tmpDir, "")
-	// assert.NoError(t, err)
-	// err = ref.DeleteImage(context.Background(), nil)
-	// assert.Error(t, err)
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {

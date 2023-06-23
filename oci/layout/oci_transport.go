@@ -204,23 +204,23 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
-func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
+func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
 	manifestPath, err := ref.blobPath(descriptor.Digest, "")
 	if err != nil {
-		return nil, err
+		return imgspecv1.Manifest{}, err
 	}
 
 	manifestJSON, err := os.Open(manifestPath)
 	if err != nil {
-		return nil, err
+		return imgspecv1.Manifest{}, err
 	}
 	defer manifestJSON.Close()
 
 	manifest := &imgspecv1.Manifest{}
 	if err := json.NewDecoder(manifestJSON).Decode(manifest); err != nil {
-		return nil, err
+		return imgspecv1.Manifest{}, err
 	}
-	return manifest, nil
+	return *manifest, nil
 }
 
 // LoadManifestDescriptor loads the manifest descriptor to be used to retrieve the image name
@@ -247,6 +247,7 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
+
 	// Get the manifest for the image
 	descriptor, err := ref.getManifestDescriptor()
 	if err != nil {
@@ -276,10 +277,10 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return err
 	}
 
-	newManifests := make([]imgspecv1.Descriptor, len(index.Manifests)-1)
-	for i, v := range index.Manifests {
+	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+	for _, v := range index.Manifests {
 		if v.Annotations[imgspecv1.AnnotationRefName] != ref.image {
-			newManifests[i] = v
+			newManifests = append(newManifests, v)
 		}
 	}
 	index.Manifests = newManifests
