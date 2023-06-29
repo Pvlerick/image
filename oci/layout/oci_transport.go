@@ -12,6 +12,7 @@ import (
 	"github.com/containers/image/v5/directory/explicitfilepath"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/internal/image"
+	"github.com/containers/image/v5/internal/set"
 	"github.com/containers/image/v5/oci/internal"
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/types"
@@ -264,7 +265,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	if err != nil {
 		return err
 	}
-	layersUsedByOtherImages := make(map[digest.Digest]bool, len(index.Manifests))
+	layersUsedByOtherImages := set.New[digest.Digest]()
 	for _, v := range index.Manifests {
 		if v.Digest != manifestDescriptor.Digest {
 			otherImageManifest, err := ref.getManifest(v)
@@ -272,7 +273,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 				return err
 			}
 			for _, layer := range otherImageManifest.Layers {
-				layersUsedByOtherImages[layer.Digest] = true
+				layersUsedByOtherImages.Add(layer.Digest)
 			}
 		}
 	}
@@ -280,7 +281,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	// Delete all blobs
 	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers))
 	for _, layer := range manifest.Layers {
-		if !layersUsedByOtherImages[layer.Digest] {
+		if !layersUsedByOtherImages.Contains(layer.Digest) {
 			blobsToDelete = append(blobsToDelete, layer.Digest)
 		}
 	}
