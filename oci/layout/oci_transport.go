@@ -162,7 +162,11 @@ func (ref ociReference) NewImage(ctx context.Context, sys *types.SystemContext) 
 // getIndex returns a pointer to the index references by this ociReference. If an error occurs opening an index nil is returned together
 // with an error.
 func (ref ociReference) getIndex() (*imgspecv1.Index, error) {
-	indexJSON, err := os.Open(ref.indexPath())
+	return parseIndex(ref.indexPath())
+}
+
+func parseIndex(path string) (*imgspecv1.Index, error) {
+	indexJSON, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +279,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 			if err != nil {
 				return err
 			}
+			blobsUsedByOtherImages.Add(otherImageManifest.Config.Digest)
 			for _, layer := range otherImageManifest.Layers {
 				blobsUsedByOtherImages.Add(layer.Digest)
 			}
