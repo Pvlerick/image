@@ -18,6 +18,7 @@ import (
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/sirupsen/logrus"
 )
 
 func init() {
@@ -206,6 +207,7 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 }
 
 func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
+	//TODO Check if there is shared blob path?
 	manifestPath, err := ref.blobPath(descriptor.Digest, "")
 	if err != nil {
 		return imgspecv1.Manifest{}, err
@@ -260,12 +262,13 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return err
 	}
 
-	// Get all the layers used by all other images
+	// Collect all the blobs used by all other images
 	index, err := ref.getIndex()
 	if err != nil {
 		return err
 	}
-	layersUsedByOtherImages := set.New[digest.Digest]()
+	blobsUsedByOtherImages := set.New[digest.Digest]()
+	//TODO: this needs to change to handle sub sub indexes and the likes
 	for _, v := range index.Manifests {
 		if v.Digest != manifestDescriptor.Digest {
 			otherImageManifest, err := ref.getManifest(v)
@@ -273,23 +276,27 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 				return err
 			}
 			for _, layer := range otherImageManifest.Layers {
-				layersUsedByOtherImages.Add(layer.Digest)
+				blobsUsedByOtherImages.Add(layer.Digest)
 			}
 		}
 	}
 
-	// Delete all blobs
-	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers))
-	for _, layer := range manifest.Layers {
-		if !layersUsedByOtherImages.Contains(layer.Digest) {
-			blobsToDelete = append(blobsToDelete, layer.Digest)
+	// Delete all blobs used by this image only
+	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers)+2)
+	for _, descriptor := range append(manifest.Layers, manifest.Config, manifestDescriptor) {
+		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
+			blobsToDelete = append(blobsToDelete, descriptor.Digest)
+		} else {
+			logrus.Debug("Blob ", descriptor.Digest.Hex(), " is used by another image, leaving it")
 		}
 	}
-	for _, digest := range append(blobsToDelete, manifest.Config.Digest, manifestDescriptor.Digest) {
+	for _, digest := range blobsToDelete {
+		//TODO Check if there is shared blob path?
 		blobPath, err := ref.blobPath(digest, "")
 		if err != nil {
 			return err
 		}
+		logrus.Debug("Deleting blob ", digest.Hex())
 		err = os.Remove(blobPath)
 		if err != nil {
 			return err
