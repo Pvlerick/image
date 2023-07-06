@@ -218,99 +218,47 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
-type indexChain struct {
-	indexPath string
-	parent    *indexChain
+// Stores an (image) descriptor along with the index it was found in and its parents if any
+// this allows the update of the index when an image is located in a nested (++) index
+type descriptorWrapper struct {
+	descriptor *imgspecv1.Descriptor
+	indexChain []*string //in order of appearence, so the last first should always be index.json
 }
 
-func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*imgspecv1.Descriptor, error) {
-	var getImageDescriptorsFromIndex func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error)
-	getImageDescriptorsFromIndex = func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error) {
-		descriptors := make([]*imgspecv1.Descriptor, 0, len(index.Manifests))
-		for _, m := range index.Manifests {
-			switch m.MediaType {
+func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*descriptorWrapper, error) {
+	var getImageDescriptorsFromIndex func(indexChain []*string) ([]*descriptorWrapper, error)
+	getImageDescriptorsFromIndex = func(indexChain []*string) ([]*descriptorWrapper, error) {
+		index, err := parseIndex(*indexChain[len(indexChain)-1]) // last item in the index is always the index in which whe are currently working
+		if err != nil {
+			return nil, err
+		}
+
+		descriptors := make([]*descriptorWrapper, 0, len(index.Manifests))
+		for _, manifestDescriptor := range index.Manifests {
+			switch manifestDescriptor.MediaType {
 			case imgspecv1.MediaTypeImageManifest:
-				descriptors = append(descriptors, &m)
+				wrapper := descriptorWrapper{&manifestDescriptor, indexChain}
+				descriptors = append(descriptors, &wrapper)
 			case imgspecv1.MediaTypeImageIndex:
-				indexBlobPath, err := ref.blobPath(m.Digest, "")
-				if err != nil {
-					return nil, err
-				}
-				nestedIndex, err := parseIndex(indexBlobPath)
+				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "")
 				if err != nil {
 					return nil, err
 				}
 				// recursively get manifests from this nested index
-				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(nestedIndex)
+				descriptorsFromNestedIndex, err := getImageDescriptorsFromIndex(append(indexChain, &nestedIndexBlobPath))
 				if err != nil {
 					return nil, err
 				}
-				descriptors = append(descriptors, descriptorsFromSubIndex...)
+				descriptors = append(descriptors, descriptorsFromNestedIndex...)
 			}
 		}
 		return descriptors, nil
 	}
 
-	index, err := ref.getIndex()
-	if err != nil {
-		return nil, err
-	}
-
-	return getImageDescriptorsFromIndex(index)
+	index := ref.indexPath()
+	indexChain := []*string{&index}
+	return getImageDescriptorsFromIndex(indexChain)
 }
-
-// func (ref ociReference) getManifestDescriptor_candidate() (*imgspecv1.Descriptor, *indexChain, error) {
-// 	var getImageDescriptorsFromIndex func(indexPath string, parentIndexPath *string) ([]*, error)
-// 	getImageDescriptorsFromIndex = func(indexPath string, parentIndexPath *string) ([]*descriptorLeaf, error) {
-// 		descriptors := make([]*descriptorLeaf, 0, len(index.Manifests))
-// 		for _, m := range index.Manifests {
-// 			switch m.MediaType {
-// 			case imgspecv1.MediaTypeImageManifest:
-// 				descriptors = append(descriptors, &descriptorLeaf{&m, indexPath, parentIndexPath})
-// 			case imgspecv1.MediaTypeImageIndex:
-// 				indexBlobPath, err := ref.blobPath(m.Digest, "")
-// 				if err != nil {
-// 					return nil, err
-// 				}
-// 				nestedIndex, err := parseIndex(indexBlobPath)
-// 				if err != nil {
-// 					return nil, err
-// 				}
-// 				// recursively get manifests from this nested index
-// 				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(nestedIndex)
-// 				if err != nil {
-// 					return nil, err
-// 				}
-// 				descriptors = append(descriptors, descriptorsFromSubIndex...)
-// 			}
-// 		}
-// 		return descriptors, nil
-// 	}
-
-// 	index, err := ref.getIndex()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	descriptors, err := getImageDescriptorsFromIndex(index, ref.indexPath(), nil)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	if ref.image == "" {
-// 		if len(descriptors) != 1 {
-// 			return nil, nil, ErrMoreThanOneImage
-// 		}
-// 		return descriptors[0], nil
-// 	} else {
-// 		for _, v := range descriptors {
-// 			if v.MediaType == imgspecv1.MediaTypeImageManifest {
-// 				return v, nil
-// 			}
-// 		}
-// 		return nil, ImageNotFoundError{ref}
-// 	}
-// }
 
 func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
 	//TODO Check if there is shared blob path?
@@ -354,17 +302,18 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	// Scan all the manifests in the registry:
 	// ... collect the one that matches with the received ref
 	// ... and store all the blobs used in all other images
-	var imageDescriptor *imgspecv1.Descriptor
+	var imageDescriptorWrapper *descriptorWrapper
 	blobsUsedByOtherImages := set.New[digest.Digest]()
 	allDescriptors, err := ref.getAllImageDescriptorsInRegistry()
 	if err != nil {
 		return err
 	}
 	for _, v := range allDescriptors {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ref.image {
-			imageDescriptor = v
+		if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ref.image {
+			tmpDescriptionWrapper := v
+			imageDescriptorWrapper = tmpDescriptionWrapper
 		} else {
-			otherImageManifest, err := ref.getManifest(v)
+			otherImageManifest, err := ref.getManifest(v.descriptor)
 			if err != nil {
 				return err
 			}
@@ -379,14 +328,14 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return ErrMoreThanOneImage
 	}
 
-	manifest, err := ref.getManifest(imageDescriptor)
+	manifest, err := ref.getManifest(imageDescriptorWrapper.descriptor)
 	if err != nil {
 		return err
 	}
 
 	// Delete all blobs used by this image only
 	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers)+2)
-	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptor) {
+	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptorWrapper.descriptor) {
 		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
 			blobsToDelete = append(blobsToDelete, descriptor.Digest)
 		} else {
@@ -407,28 +356,33 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	}
 
 	// Update the index
-	//TODO Update can affect the index chain up till the index.json
-	// newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
-	// for _, v := range index.Manifests {
-	// 	if v.Digest != manifestDescriptor.Digest {
-	// 		newManifests = append(newManifests, v)
-	// 	}
-	// }
-	// index.Manifests = newManifests
+	// ... in case of nested index(es), the index chain will be > 1
 
-	// indexInfo, err := os.Stat(ref.indexPath())
-	// if err != nil {
-	// 	return err
-	// }
+	if len(imageDescriptorWrapper.indexChain) > 1 {
+		// Update all the nested indexes, or delete them if they are empty (two empty indexes will have the same hash)
+		for i := len(imageDescriptorWrapper.indexChain) - 1; i > 0; i-- {
+		}
+	}
+	// ... and finally update the root index.json
+	index, err := parseIndex(*imageDescriptorWrapper.indexChain[0])
+	if err != nil {
+		return err
+	}
+	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+	index.Manifests = newManifests
 
-	// indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
-	// if err != nil {
-	// 	return err
-	// }
-	// defer indexJSON.Close()
+	indexInfo, err := os.Stat(ref.indexPath())
+	if err != nil {
+		return err
+	}
 
-	// return json.NewEncoder(indexJSON).Encode(index)
-	return nil
+	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer indexJSON.Close()
+
+	return json.NewEncoder(indexJSON).Encode(index)
 }
 
 // ociLayoutPath returns a path for the oci-layout within a directory using OCI conventions.
