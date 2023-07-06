@@ -218,38 +218,34 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
-func (ref ociReference) getManifestDescriptor_candidate() (*imgspecv1.Descriptor, error) {
+type indexChain struct {
+	indexPath string
+	parent    *indexChain
+}
+
+func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*imgspecv1.Descriptor, error) {
 	var getImageDescriptorsFromIndex func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error)
 	getImageDescriptorsFromIndex = func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error) {
 		descriptors := make([]*imgspecv1.Descriptor, 0, len(index.Manifests))
 		for _, m := range index.Manifests {
 			switch m.MediaType {
 			case imgspecv1.MediaTypeImageManifest:
-				descriptorBlobPath, err := ref.blobPath(m.Digest, "")
-				if err != nil {
-					return nil, err
-				}
-				descriptor, err := parseDescriptor(descriptorBlobPath)
-				if err != nil {
-					return nil, err
-				}
-				descriptors = append(descriptors, descriptor)
+				descriptors = append(descriptors, &m)
 			case imgspecv1.MediaTypeImageIndex:
 				indexBlobPath, err := ref.blobPath(m.Digest, "")
 				if err != nil {
 					return nil, err
 				}
-				subIndex, err := parseIndex(indexBlobPath)
+				nestedIndex, err := parseIndex(indexBlobPath)
 				if err != nil {
 					return nil, err
 				}
-				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(subIndex)
+				// recursively get manifests from this nested index
+				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(nestedIndex)
 				if err != nil {
 					return nil, err
 				}
 				descriptors = append(descriptors, descriptorsFromSubIndex...)
-				//recursively scan this index too
-				//manifest, add it to the list
 			}
 		}
 		return descriptors, nil
@@ -260,44 +256,75 @@ func (ref ociReference) getManifestDescriptor_candidate() (*imgspecv1.Descriptor
 		return nil, err
 	}
 
-	descriptors, err := getImageDescriptorsFromIndex(index)
+	return getImageDescriptorsFromIndex(index)
+}
+
+// func (ref ociReference) getManifestDescriptor_candidate() (*imgspecv1.Descriptor, *indexChain, error) {
+// 	var getImageDescriptorsFromIndex func(indexPath string, parentIndexPath *string) ([]*, error)
+// 	getImageDescriptorsFromIndex = func(indexPath string, parentIndexPath *string) ([]*descriptorLeaf, error) {
+// 		descriptors := make([]*descriptorLeaf, 0, len(index.Manifests))
+// 		for _, m := range index.Manifests {
+// 			switch m.MediaType {
+// 			case imgspecv1.MediaTypeImageManifest:
+// 				descriptors = append(descriptors, &descriptorLeaf{&m, indexPath, parentIndexPath})
+// 			case imgspecv1.MediaTypeImageIndex:
+// 				indexBlobPath, err := ref.blobPath(m.Digest, "")
+// 				if err != nil {
+// 					return nil, err
+// 				}
+// 				nestedIndex, err := parseIndex(indexBlobPath)
+// 				if err != nil {
+// 					return nil, err
+// 				}
+// 				// recursively get manifests from this nested index
+// 				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(nestedIndex)
+// 				if err != nil {
+// 					return nil, err
+// 				}
+// 				descriptors = append(descriptors, descriptorsFromSubIndex...)
+// 			}
+// 		}
+// 		return descriptors, nil
+// 	}
+
+// 	index, err := ref.getIndex()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	descriptors, err := getImageDescriptorsFromIndex(index, ref.indexPath(), nil)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	if ref.image == "" {
+// 		if len(descriptors) != 1 {
+// 			return nil, nil, ErrMoreThanOneImage
+// 		}
+// 		return descriptors[0], nil
+// 	} else {
+// 		for _, v := range descriptors {
+// 			if v.MediaType == imgspecv1.MediaTypeImageManifest {
+// 				return v, nil
+// 			}
+// 		}
+// 		return nil, ImageNotFoundError{ref}
+// 	}
+// }
+
+func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
+	//TODO Check if there is shared blob path?
+	manifestPath, err := ref.blobPath(descriptor.Digest, "")
 	if err != nil {
 		return nil, err
 	}
 
-	if ref.image == "" {
-		if len(descriptors) != 1 {
-			return nil, ErrMoreThanOneImage
-		}
-		return descriptors[0], nil
-	} else {
-		for _, v := range descriptors {
-			if v.MediaType == imgspecv1.MediaTypeImageManifest {
-				return v, nil
-			}
-		}
-		return nil, ImageNotFoundError{ref}
-	}
-}
-
-func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
-	//TODO Check if there is shared blob path?
-	manifestPath, err := ref.blobPath(descriptor.Digest, "")
+	manifest, err := parseJson[imgspecv1.Manifest](manifestPath)
 	if err != nil {
-		return imgspecv1.Manifest{}, err
+		return nil, err
 	}
 
-	manifestJSON, err := os.Open(manifestPath)
-	if err != nil {
-		return imgspecv1.Manifest{}, err
-	}
-	defer manifestJSON.Close()
-
-	manifest := &imgspecv1.Manifest{}
-	if err := json.NewDecoder(manifestJSON).Decode(manifest); err != nil {
-		return imgspecv1.Manifest{}, err
-	}
-	return *manifest, nil
+	return manifest, nil
 }
 
 // LoadManifestDescriptor loads the manifest descriptor to be used to retrieve the image name
@@ -324,27 +351,19 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
-
-	// Get the manifest for the image
-	manifestDescriptor, err := ref.getManifestDescriptor()
-	if err != nil {
-		return err
-	}
-
-	manifest, err := ref.getManifest(manifestDescriptor)
-	if err != nil {
-		return err
-	}
-
-	// Collect all the blobs used by all other images
-	index, err := ref.getIndex()
-	if err != nil {
-		return err
-	}
+	// Scan all the manifests in the registry:
+	// ... collect the one that matches with the received ref
+	// ... and store all the blobs used in all other images
+	var imageDescriptor *imgspecv1.Descriptor
 	blobsUsedByOtherImages := set.New[digest.Digest]()
-	//TODO: this needs to change to handle sub sub indexes and the likes
-	for _, v := range index.Manifests {
-		if v.Digest != manifestDescriptor.Digest {
+	allDescriptors, err := ref.getAllImageDescriptorsInRegistry()
+	if err != nil {
+		return err
+	}
+	for _, v := range allDescriptors {
+		if v.Annotations[imgspecv1.AnnotationRefName] == ref.image {
+			imageDescriptor = v
+		} else {
 			otherImageManifest, err := ref.getManifest(v)
 			if err != nil {
 				return err
@@ -356,9 +375,18 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 	}
 
+	if ref.image == "" && len(allDescriptors) > 1 {
+		return ErrMoreThanOneImage
+	}
+
+	manifest, err := ref.getManifest(imageDescriptor)
+	if err != nil {
+		return err
+	}
+
 	// Delete all blobs used by this image only
 	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers)+2)
-	for _, descriptor := range append(manifest.Layers, manifest.Config, manifestDescriptor) {
+	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptor) {
 		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
 			blobsToDelete = append(blobsToDelete, descriptor.Digest)
 		} else {
@@ -379,26 +407,28 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	}
 
 	// Update the index
-	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
-	for _, v := range index.Manifests {
-		if v.Digest != manifestDescriptor.Digest {
-			newManifests = append(newManifests, v)
-		}
-	}
-	index.Manifests = newManifests
+	//TODO Update can affect the index chain up till the index.json
+	// newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+	// for _, v := range index.Manifests {
+	// 	if v.Digest != manifestDescriptor.Digest {
+	// 		newManifests = append(newManifests, v)
+	// 	}
+	// }
+	// index.Manifests = newManifests
 
-	indexInfo, err := os.Stat(ref.indexPath())
-	if err != nil {
-		return err
-	}
+	// indexInfo, err := os.Stat(ref.indexPath())
+	// if err != nil {
+	// 	return err
+	// }
 
-	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
-	if err != nil {
-		return err
-	}
-	defer indexJSON.Close()
+	// indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
+	// if err != nil {
+	// 	return err
+	// }
+	// defer indexJSON.Close()
 
-	return json.NewEncoder(indexJSON).Encode(index)
+	// return json.NewEncoder(indexJSON).Encode(index)
+	return nil
 }
 
 // ociLayoutPath returns a path for the oci-layout within a directory using OCI conventions.
