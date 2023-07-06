@@ -165,33 +165,26 @@ func (ref ociReference) getIndex() (*imgspecv1.Index, error) {
 	return parseIndex(ref.indexPath())
 }
 
-func parseIndex(path string) (*imgspecv1.Index, error) {
-	indexJSON, err := os.Open(path)
+func parseJson[T any](path string) (*T, error) {
+	content, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer indexJSON.Close()
+	defer content.Close()
 
-	index := &imgspecv1.Index{}
-	if err := json.NewDecoder(indexJSON).Decode(index); err != nil {
+	obj := new(T)
+	if err := json.NewDecoder(content).Decode(obj); err != nil {
 		return nil, err
 	}
-	return index, nil
+	return obj, nil
 }
 
-// TODO Refactor with previous method
-func parseDescriptor(path string) (*imgspecv1.Descriptor, error) {
-	descriptorJSON, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer descriptorJSON.Close()
+func parseIndex(path string) (*imgspecv1.Index, error) {
+	return parseJson[imgspecv1.Index](path)
+}
 
-	descriptor := &imgspecv1.Descriptor{}
-	if err := json.NewDecoder(descriptorJSON).Decode(descriptor); err != nil {
-		return nil, err
-	}
-	return descriptor, nil
+func parseDescriptor(path string) (*imgspecv1.Descriptor, error) {
+	return parseJson[imgspecv1.Descriptor](path)
 }
 
 func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {

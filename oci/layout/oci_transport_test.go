@@ -471,16 +471,27 @@ func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
 	err = ref.DeleteImage(context.Background(), nil)
 	require.NoError(t, err)
 
-	// Check that all blobs were deleted
+	// Check that all relevant blobs were deleted/preserved
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc")
-	blobDoesNotExist(t, blobsDir, "sha256:1f97f0559cbddbff6c872039e93f18c1abdc279cbe82e0eb40258c28f4c30bfd")
-	blobDoesNotExist(t, blobsDir, "sha256:53ba123023095900727503b971a736d6afaf2dbd02a104a67617ca249abe011f")
+	blobDoesNotExist(t, blobsDir, "sha256:eaa95f3cfaac07c8a5153eb77c933269586ad0226c83405776be08547e4d2a18") // manifest for the image
+	blobDoesNotExist(t, blobsDir, "sha256:a527179158cd5cebc11c152b8637b47ce96c838ba2aa0de66d14f45cedc11423") // configuration for the image
+	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc") // layer used by that image only
+	blobExists(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545")       // layer used by another image in the index(es)
 
-	// Check that the index doesn't contain the reference anymore
-	// ... index is not the index.json but the blob referenced in the index.json
-	// ... at that point, since the nested index's content has changed, its sha256 too
-	// ... so it needs to be renamed and index.json has to be updated too
+	// Check that a few new blobs have been created after index deletion/update
+	blobDoesNotExist(t, blobsDir, "sha256:fbe294d1b627d6ee3c119d558dad8b1c4542cbc51c49ec45dd638921bc5921d0") // nested index 2 that contained the image and only that image
+	blobDoesNotExist(t, blobsDir, "sha256:b2ff1c27b718b90910711aeda5e02ebbf4440659edd589cc458b3039ea91b35f") // nested index 1, should have been renamed - see next line
+	const nestedIndexDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	blobExists(t, blobsDir, nestedIndexDigest) // new sha of the nested index
+
+	// Check that the index has been update with the new subindex's sha
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(index.Manifests))
+	assert.Equal(t, imgspecv1.MediaTypeImageIndex, index.Manifests[0].MediaType)
+	assert.Equal(t, nestedIndexDigest, index.Manifests[0].Digest)
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {

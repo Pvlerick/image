@@ -11,6 +11,11 @@
       "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
       "digest": "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc",
       "size": 33
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545",
+      "size": 34
     }
   ]
 }
