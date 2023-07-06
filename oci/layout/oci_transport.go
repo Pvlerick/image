@@ -179,6 +179,21 @@ func parseIndex(path string) (*imgspecv1.Index, error) {
 	return index, nil
 }
 
+// TODO Refactor with previous method
+func parseDescriptor(path string) (*imgspecv1.Descriptor, error) {
+	descriptorJSON, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer descriptorJSON.Close()
+
+	descriptor := &imgspecv1.Descriptor{}
+	if err := json.NewDecoder(descriptorJSON).Decode(descriptor); err != nil {
+		return nil, err
+	}
+	return descriptor, nil
+}
+
 func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	index, err := ref.getIndex()
 	if err != nil {
@@ -208,6 +223,68 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 		}
 	}
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
+}
+
+func (ref ociReference) getManifestDescriptor_candidate() (*imgspecv1.Descriptor, error) {
+	var getImageDescriptorsFromIndex func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error)
+	getImageDescriptorsFromIndex = func(index *imgspecv1.Index) ([]*imgspecv1.Descriptor, error) {
+		descriptors := make([]*imgspecv1.Descriptor, 0, len(index.Manifests))
+		for _, m := range index.Manifests {
+			switch m.MediaType {
+			case imgspecv1.MediaTypeImageManifest:
+				descriptorBlobPath, err := ref.blobPath(m.Digest, "")
+				if err != nil {
+					return nil, err
+				}
+				descriptor, err := parseDescriptor(descriptorBlobPath)
+				if err != nil {
+					return nil, err
+				}
+				descriptors = append(descriptors, descriptor)
+			case imgspecv1.MediaTypeImageIndex:
+				indexBlobPath, err := ref.blobPath(m.Digest, "")
+				if err != nil {
+					return nil, err
+				}
+				subIndex, err := parseIndex(indexBlobPath)
+				if err != nil {
+					return nil, err
+				}
+				descriptorsFromSubIndex, err := getImageDescriptorsFromIndex(subIndex)
+				if err != nil {
+					return nil, err
+				}
+				descriptors = append(descriptors, descriptorsFromSubIndex...)
+				//recursively scan this index too
+				//manifest, add it to the list
+			}
+		}
+		return descriptors, nil
+	}
+
+	index, err := ref.getIndex()
+	if err != nil {
+		return nil, err
+	}
+
+	descriptors, err := getImageDescriptorsFromIndex(index)
+	if err != nil {
+		return nil, err
+	}
+
+	if ref.image == "" {
+		if len(descriptors) != 1 {
+			return nil, ErrMoreThanOneImage
+		}
+		return descriptors[0], nil
+	} else {
+		for _, v := range descriptors {
+			if v.MediaType == imgspecv1.MediaTypeImageManifest {
+				return v, nil
+			}
+		}
+		return nil, ImageNotFoundError{ref}
+	}
 }
 
 func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
