@@ -1,10 +1,12 @@
 package layout
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,18 +167,22 @@ func (ref ociReference) getIndex() (*imgspecv1.Index, error) {
 	return parseIndex(ref.indexPath())
 }
 
-func parseIndex(path string) (*imgspecv1.Index, error) {
-	indexJSON, err := os.Open(path)
+func parseJson[T any](path string) (*T, error) {
+	content, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer indexJSON.Close()
+	defer content.Close()
 
-	index := &imgspecv1.Index{}
-	if err := json.NewDecoder(indexJSON).Decode(index); err != nil {
+	obj := new(T)
+	if err := json.NewDecoder(content).Decode(obj); err != nil {
 		return nil, err
 	}
-	return index, nil
+	return obj, nil
+}
+
+func parseIndex(path string) (*imgspecv1.Index, error) {
+	return parseJson[imgspecv1.Index](path)
 }
 
 func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
@@ -210,24 +216,65 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 	return imgspecv1.Descriptor{}, ImageNotFoundError{ref}
 }
 
-func (ref ociReference) getManifest(descriptor imgspecv1.Descriptor) (imgspecv1.Manifest, error) {
+// Stores an (image) descriptor along with the index it was found in and its parents if any
+// this allows the update of the index when an image is located in a nested (++) index
+type descriptorWrapper struct {
+	descriptor *imgspecv1.Descriptor
+	indexChain []*string //in order of appearence, the first is always be index.json and the nested indexes, last one being the one where the descriptor was found in
+}
+
+// This will return all the descriptors of all the images found in the repository
+// It starts at the index.json and then walks all nested indexes
+// Each image descriptor is returned along with the index it was found, as well as it parents if it is a nested index
+func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*descriptorWrapper, error) {
+	var getImageDescriptorsFromIndex func(indexChain []*string) ([]*descriptorWrapper, error)
+	getImageDescriptorsFromIndex = func(indexChain []*string) ([]*descriptorWrapper, error) {
+		index, err := parseIndex(*indexChain[len(indexChain)-1]) // last item in the index is always the index in which whe are currently working
+		if err != nil {
+			return nil, err
+		}
+
+		descriptors := make([]*descriptorWrapper, 0, len(index.Manifests))
+		for _, manifestDescriptor := range index.Manifests {
+			switch manifestDescriptor.MediaType {
+			case imgspecv1.MediaTypeImageManifest:
+				tmpManifestDescriptor := manifestDescriptor
+				wrapper := descriptorWrapper{&tmpManifestDescriptor, indexChain}
+				descriptors = append(descriptors, &wrapper)
+			case imgspecv1.MediaTypeImageIndex:
+				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "")
+				if err != nil {
+					return nil, err
+				}
+				// recursively get manifests from this nested index
+				descriptorsFromNestedIndex, err := getImageDescriptorsFromIndex(append(indexChain, &nestedIndexBlobPath))
+				if err != nil {
+					return nil, err
+				}
+				descriptors = append(descriptors, descriptorsFromNestedIndex...)
+			}
+		}
+		return descriptors, nil
+	}
+
+	index := ref.indexPath()
+	indexChain := []*string{&index} // We start the walk at the root: index.json
+	return getImageDescriptorsFromIndex(indexChain)
+}
+
+func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
 	//TODO Check if there is shared blob path?
 	manifestPath, err := ref.blobPath(descriptor.Digest, "")
 	if err != nil {
-		return imgspecv1.Manifest{}, err
+		return nil, err
 	}
 
-	manifestJSON, err := os.Open(manifestPath)
+	manifest, err := parseJson[imgspecv1.Manifest](manifestPath)
 	if err != nil {
-		return imgspecv1.Manifest{}, err
+		return nil, err
 	}
-	defer manifestJSON.Close()
 
-	manifest := &imgspecv1.Manifest{}
-	if err := json.NewDecoder(manifestJSON).Decode(manifest); err != nil {
-		return imgspecv1.Manifest{}, err
-	}
-	return *manifest, nil
+	return manifest, nil
 }
 
 // LoadManifestDescriptor loads the manifest descriptor to be used to retrieve the image name
@@ -252,43 +299,60 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 	return newImageDestination(sys, ref)
 }
 
+type indexUpdateStep struct {
+	action    string
+	digest    digest.Digest
+	newDigest *digest.Digest
+}
+
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
-
-	// Get the manifest for the image
-	manifestDescriptor, err := ref.getManifestDescriptor()
-	if err != nil {
-		return err
-	}
-
-	manifest, err := ref.getManifest(manifestDescriptor)
-	if err != nil {
-		return err
-	}
-
-	// Collect all the blobs used by all other images
-	index, err := ref.getIndex()
-	if err != nil {
-		return err
-	}
+	// Scan all the manifests in the registry:
+	// ... collect the one that matches with the received ref
+	// ... and store all the blobs used in all other images
+	var imageDescriptorWrapper *descriptorWrapper
 	blobsUsedByOtherImages := set.New[digest.Digest]()
-	//TODO: this needs to change to handle sub sub indexes and the likes
-	for _, v := range index.Manifests {
-		if v.Digest != manifestDescriptor.Digest {
-			otherImageManifest, err := ref.getManifest(v)
-			if err != nil {
-				return err
-			}
-			blobsUsedByOtherImages.Add(otherImageManifest.Config.Digest)
-			for _, layer := range otherImageManifest.Layers {
-				blobsUsedByOtherImages.Add(layer.Digest)
+	allDescriptors, err := ref.getAllImageDescriptorsInRegistry()
+	if err != nil {
+		return err
+	}
+
+	if ref.image == "" {
+		if len(allDescriptors) == 1 {
+			imageDescriptorWrapper = allDescriptors[0]
+		} else {
+			return ErrMoreThanOneImage
+		}
+	} else {
+		for _, v := range allDescriptors {
+			if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ref.image {
+				tmpDescriptionWrapper := v
+				imageDescriptorWrapper = tmpDescriptionWrapper
+			} else {
+				otherImageManifest, err := ref.getManifest(v.descriptor)
+				if err != nil {
+					return err
+				}
+				blobsUsedByOtherImages.Add(otherImageManifest.Config.Digest)
+				for _, layer := range otherImageManifest.Layers {
+					blobsUsedByOtherImages.Add(layer.Digest)
+				}
 			}
 		}
 	}
 
+	if ref.image != "" && imageDescriptorWrapper == nil {
+		return ImageNotFoundError{ref}
+	}
+
+	manifest, err := ref.getManifest(imageDescriptorWrapper.descriptor)
+	if err != nil {
+		return err
+	}
+
 	// Delete all blobs used by this image only
 	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers)+2)
-	for _, descriptor := range append(manifest.Layers, manifest.Config, manifestDescriptor) {
+	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptorWrapper.descriptor) {
 		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
 			blobsToDelete = append(blobsToDelete, descriptor.Digest)
 		} else {
@@ -308,27 +372,96 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 	}
 
-	// Update the index
-	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
-	for _, v := range index.Manifests {
-		if v.Digest != manifestDescriptor.Digest {
-			newManifests = append(newManifests, v)
+	// This holds the step to be done on the current index, as we walk back bottom up
+	step := indexUpdateStep{"delete", imageDescriptorWrapper.descriptor.Digest, nil}
+
+	for i := len(imageDescriptorWrapper.indexChain) - 1; i >= 0; i-- {
+		indexPath := *imageDescriptorWrapper.indexChain[i]
+		index, err := parseIndex(indexPath)
+		if err != nil {
+			return err
+		}
+		// Fill new index with existing manifests except the one we are removing
+		newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests))
+		for _, v := range index.Manifests {
+			if v.Digest == step.digest {
+				switch step.action {
+				case "delete":
+					continue
+				case "update":
+					newDescriptor := v
+					newDescriptor.Digest = *step.newDigest
+					newManifests = append(newManifests, newDescriptor)
+				}
+			} else {
+				newManifests = append(newManifests, v)
+			}
+		}
+		index.Manifests = newManifests
+
+		// New index is ready, it has to be saved to disk now
+		// ... if it is the root index, it's easy, just overwrite it
+		if indexPath == ref.indexPath() {
+			return saveJson(ref.indexPath(), index)
+		} else {
+			indexDigest, err := digest.Parse("sha256:" + filepath.Base(indexPath))
+			if err != nil {
+				return err
+			}
+			// In a nested index, if the new index is empty it has to be remove, otherwise update the parent index with the new hash
+			if len(index.Manifests) == 0 {
+				step = indexUpdateStep{"delete", indexDigest, nil}
+			} else {
+				// Save the new file
+				buffer := new(bytes.Buffer)
+				err = json.NewEncoder(buffer).Encode(index)
+				if err != nil {
+					return err
+				}
+				indexNewDigest := digest.SHA256.FromBytes(buffer.Bytes())
+				indexNewPath, err := ref.blobPath(indexNewDigest, "")
+				if err != nil {
+					return err
+				}
+				err = saveJson(indexNewPath, index)
+				if err != nil {
+					return err
+				}
+				step = indexUpdateStep{"update", indexDigest, &indexNewDigest}
+			}
+			// Delete the current index; it is dangling by now as it'll either be empty or have a new hash
+			err = os.Remove(indexPath)
+			if err != nil {
+				return err
+			}
 		}
 	}
-	index.Manifests = newManifests
 
-	indexInfo, err := os.Stat(ref.indexPath())
+	return nil
+}
+
+func saveJson(path string, content any) error {
+	// If the file already exists, get its mode to preserve it
+	var mode fs.FileMode
+	existinfFileInfo, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		} else { // File does not exist, use default mode
+			mode = 0644
+		}
+	} else {
+		mode = existinfFileInfo.Mode()
+	}
+
+	// Then write the file
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 
-	indexJSON, err := os.OpenFile(ref.indexPath(), os.O_WRONLY|os.O_TRUNC, indexInfo.Mode())
-	if err != nil {
-		return err
-	}
-	defer indexJSON.Close()
-
-	return json.NewEncoder(indexJSON).Encode(index)
+	return json.NewEncoder(file).Encode(content)
 }
 
 // ociLayoutPath returns a path for the oci-layout within a directory using OCI conventions.

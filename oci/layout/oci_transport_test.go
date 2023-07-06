@@ -345,16 +345,12 @@ func TestReferenceDeleteImage(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, files)
 
-	// Check that the index doesn't contain the reference anymore
+	// Check that the index is empty as there is only one image in the fixture
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
 	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	for _, v := range index.Manifests {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
-			assert.Fail(t, "image still present in the index after deletion")
-		}
-	}
+	require.Equal(t, 0, len(index.Manifests))
 }
 
 func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
@@ -372,16 +368,12 @@ func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, files)
 
-	// Check that the index doesn't contain the reference anymore
+	// Check that the index is empty as there is only one image in the fixture
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
 	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	for _, v := range index.Manifests {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
-			assert.Fail(t, "image still present in the index after deletion")
-		}
-	}
+	require.Equal(t, 0, len(index.Manifests))
 }
 
 func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
@@ -415,13 +407,18 @@ func TestReferenceDeleteImage_moreThanOneImageInIndex(t *testing.T) {
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	index, err := ociRef.getIndex()
+	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
 	require.NoError(t, err)
-	for _, v := range index.Manifests {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
+	otherImageStillPresent := false //This will track that other images are still there
+	for _, v := range descriptors {
+		switch v.descriptor.Annotations[imgspecv1.AnnotationRefName] {
+		case ociRef.image:
 			assert.Fail(t, "image still present in the index after deletion")
+		case "3.10.2":
+			otherImageStillPresent = true
 		}
 	}
+	require.True(t, otherImageStillPresent)
 }
 
 func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImageInIndex(t *testing.T) {
@@ -453,12 +450,22 @@ func TestReferenceDeleteImage_someBlobsAreUsedByOtherImages(t *testing.T) {
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	index, err := ociRef.getIndex()
+	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
 	require.NoError(t, err)
-	for _, v := range index.Manifests {
-		if v.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
+	otherImagesStillPresent := make([]bool, 0, 2) //This will track that other images are still there
+	for _, v := range descriptors {
+		switch v.descriptor.Annotations[imgspecv1.AnnotationRefName] {
+		case ociRef.image:
 			assert.Fail(t, "image still present in the index after deletion")
+		case "3.10.2":
+			otherImagesStillPresent = append(otherImagesStillPresent, true)
+		case "latest":
+			otherImagesStillPresent = append(otherImagesStillPresent, true)
 		}
+	}
+	require.Equal(t, 2, len(otherImagesStillPresent))
+	for _, v := range otherImagesStillPresent {
+		require.True(t, v)
 	}
 }
 
@@ -471,16 +478,24 @@ func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
 	err = ref.DeleteImage(context.Background(), nil)
 	require.NoError(t, err)
 
-	// Check that all blobs were deleted
+	// Check that all relevant blobs were deleted/preserved
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc")
-	blobDoesNotExist(t, blobsDir, "sha256:1f97f0559cbddbff6c872039e93f18c1abdc279cbe82e0eb40258c28f4c30bfd")
-	blobDoesNotExist(t, blobsDir, "sha256:53ba123023095900727503b971a736d6afaf2dbd02a104a67617ca249abe011f")
+	blobDoesNotExist(t, blobsDir, "sha256:4a6da698b869046086d0e6ba846f8b931cb33bbaa5c68025b4fd55f67a4f0513") // manifest for the image
+	blobDoesNotExist(t, blobsDir, "sha256:a527179158cd5cebc11c152b8637b47ce96c838ba2aa0de66d14f45cedc11423") // configuration for the image
+	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc") // layer used by that image only
+	blobExists(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545")       // layer used by another image in the index(es)
 
-	// Check that the index doesn't contain the reference anymore
-	// ... index is not the index.json but the blob referenced in the index.json
-	// ... at that point, since the nested index's content has changed, its sha256 too
-	// ... so it needs to be renamed and index.json has to be updated too
+	// Check that a few new blobs have been created after index deletion/update
+	blobDoesNotExist(t, blobsDir, "sha256:fbe294d1b627d6ee3c119d558dad8b1c4542cbc51c49ec45dd638921bc5921d0") // nested index 2 that contained the image and only that image
+	blobDoesNotExist(t, blobsDir, "sha256:b2ff1c27b718b90910711aeda5e02ebbf4440659edd589cc458b3039ea91b35f") // nested index 1, should have been renamed - see next line
+	blobExists(t, blobsDir, "sha256:13e9f5dde0af5d4303ef0e69d847bc14db6c86a7df616831e126821daf532982")       // new sha of the nested index
+
+	// Check that the index has been update with the new nestedindex's sha
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(index.Manifests))
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {
