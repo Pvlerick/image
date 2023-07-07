@@ -480,7 +480,7 @@ func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
 
 	// Check that all relevant blobs were deleted/preserved
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:eaa95f3cfaac07c8a5153eb77c933269586ad0226c83405776be08547e4d2a18") // manifest for the image
+	blobDoesNotExist(t, blobsDir, "sha256:4a6da698b869046086d0e6ba846f8b931cb33bbaa5c68025b4fd55f67a4f0513") // manifest for the image
 	blobDoesNotExist(t, blobsDir, "sha256:a527179158cd5cebc11c152b8637b47ce96c838ba2aa0de66d14f45cedc11423") // configuration for the image
 	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc") // layer used by that image only
 	blobExists(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545")       // layer used by another image in the index(es)
@@ -488,17 +488,14 @@ func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
 	// Check that a few new blobs have been created after index deletion/update
 	blobDoesNotExist(t, blobsDir, "sha256:fbe294d1b627d6ee3c119d558dad8b1c4542cbc51c49ec45dd638921bc5921d0") // nested index 2 that contained the image and only that image
 	blobDoesNotExist(t, blobsDir, "sha256:b2ff1c27b718b90910711aeda5e02ebbf4440659edd589cc458b3039ea91b35f") // nested index 1, should have been renamed - see next line
-	const nestedIndexDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	blobExists(t, blobsDir, nestedIndexDigest) // new sha of the nested index
+	blobExists(t, blobsDir, "sha256:13e9f5dde0af5d4303ef0e69d847bc14db6c86a7df616831e126821daf532982")       // new sha of the nested index
 
-	// Check that the index has been update with the new subindex's sha
+	// Check that the index has been update with the new nestedindex's sha
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	_, err = ociRef.getAllImageDescriptorsInRegistry()
+	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	// assert.Equal(t, 1, len(index.Manifests))
-	// assert.Equal(t, imgspecv1.MediaTypeImageIndex, index.Manifests[0].MediaType)
-	// assert.Equal(t, nestedIndexDigest, index.Manifests[0].Digest)
+	assert.Equal(t, 1, len(index.Manifests))
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {

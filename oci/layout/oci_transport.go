@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -299,6 +300,12 @@ func (ref ociReference) NewImageDestination(ctx context.Context, sys *types.Syst
 	return newImageDestination(sys, ref)
 }
 
+type indexUpdateStep struct {
+	action    string
+	digest    digest.Digest
+	newDigest *digest.Digest
+}
+
 // DeleteImage deletes the named image from the registry, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
 	// Scan all the manifests in the registry:
@@ -366,17 +373,28 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 	}
 
-	//TODO always update the index.json, so dont add it in the indexChain?
+	// This holds the step to be done on the current index, as we walk back bottom up
+	step := indexUpdateStep{"delete", imageDescriptorWrapper.descriptor.Digest, nil}
 
 	for i := len(imageDescriptorWrapper.indexChain) - 1; i >= 0; i-- {
-		index, err := parseIndex(*imageDescriptorWrapper.indexChain[i])
+		indexPath := *imageDescriptorWrapper.indexChain[i]
+		index, err := parseIndex(indexPath)
 		if err != nil {
 			return err
 		}
 		// Fill new index with existing manifests except the one we are removing
-		newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+		newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests))
 		for _, v := range index.Manifests {
-			if v.Digest != imageDescriptorWrapper.descriptor.Digest {
+			if v.Digest == step.digest {
+				switch step.action {
+				case "delete":
+					continue
+				case "update":
+					newDescriptor := v
+					newDescriptor.Digest = *step.newDigest
+					newManifests = append(newManifests, newDescriptor)
+				}
+			} else {
 				newManifests = append(newManifests, v)
 			}
 		}
@@ -384,11 +402,39 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 
 		// New index is ready, it has to be saved to disk now
 		// ... if it is the root index, it's easy, just overwrite it
-		if *imageDescriptorWrapper.indexChain[i] == ref.indexPath() {
+		if indexPath == ref.indexPath() {
 			return saveJson(ref.indexPath(), index)
 		} else {
-			// ... in a nested index, now we need to calculate the sha, save it as a blob...
-			return ErrMoreThanOneImage
+			indexDigest, err := digest.Parse("sha256:" + filepath.Base(indexPath))
+			if err != nil {
+				return err
+			}
+			// In a nested index, if the new index is empty it has to be remove, otherwise update the parent index with the new hash
+			if len(index.Manifests) == 0 {
+				step = indexUpdateStep{"delete", indexDigest, nil}
+			} else {
+				// Save the new file
+				buffer := new(bytes.Buffer)
+				err = json.NewEncoder(buffer).Encode(index)
+				if err != nil {
+					return err
+				}
+				indexNewDigest := digest.SHA256.FromBytes(buffer.Bytes())
+				indexNewPath, err := ref.blobPath(indexNewDigest, "")
+				if err != nil {
+					return err
+				}
+				err = saveJson(indexNewPath, index)
+				if err != nil {
+					return err
+				}
+				step = indexUpdateStep{"update", indexDigest, &indexNewDigest}
+			}
+			// Delete the current index; it is dangling by now as it'll either be empty or have a new hash
+			err = os.Remove(indexPath)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -400,9 +446,9 @@ func saveJson(path string, content any) error {
 	var mode fs.FileMode
 	existinfFileInfo, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if !os.IsNotExist(err) {
 			return err
-		} else {
+		} else { // File does not exist, use default mode
 			mode = 0644
 		}
 	} else {
