@@ -367,52 +367,32 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	}
 
 	//TODO always update the index.json, so dont add it in the indexChain?
-	// Update the index
-	// ... in case of nested index(es), the index chain will be > 1
-	if len(imageDescriptorWrapper.indexChain) > 0 {
-		// Update all the nested indexes, or delete them if they are empty (two empty indexes will have the same hash)
-		//var previousIndex *string = nil
-		for i := len(imageDescriptorWrapper.indexChain) - 1; i > 0; i-- {
-			nestedIndex, err := parseIndex(*imageDescriptorWrapper.indexChain[i])
-			if err != nil {
-				return err
-			}
-			// Fill new nested index
-			newManifests := make([]imgspecv1.Descriptor, 0, len(nestedIndex.Manifests)-1)
-			for _, v := range nestedIndex.Manifests {
-				if v.Digest != imageDescriptorWrapper.descriptor.Digest {
-					newManifests = append(newManifests, v)
-				}
-			}
 
-			// Either it's empty and it should be deleted, or it still has 1+ elements and its sha has changed
-			if len(newManifests) == 0 {
-				os.Remove(*imageDescriptorWrapper.indexChain[i])
-				//previousIndex = nil
-			} else {
-				// Create new file, calculate its sha, save to disk
-				nestedIndex.Manifests = newManifests
-				nestedIndexDigest := ""
-				indexPath, err := ref.blobPath(digest.Digest(nestedIndexDigest), "")
-				if err != nil {
-					return err
-				}
-				err = saveJson(indexPath, nestedIndex)
-				if err != nil {
-					return err
-				}
+	for i := len(imageDescriptorWrapper.indexChain) - 1; i >= 0; i-- {
+		index, err := parseIndex(*imageDescriptorWrapper.indexChain[i])
+		if err != nil {
+			return err
+		}
+		// Fill new index with existing manifests except the one we are removing
+		newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+		for _, v := range index.Manifests {
+			if v.Digest != imageDescriptorWrapper.descriptor.Digest {
+				newManifests = append(newManifests, v)
 			}
 		}
-	}
-	// ... and finally update the root index.json - imageDescriptorWrapper.indexChain[0] will hold the path to index.json too
-	index, err := ref.getIndex()
-	if err != nil {
-		return err
-	}
-	newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
-	index.Manifests = newManifests
+		index.Manifests = newManifests
 
-	return saveJson(ref.indexPath(), *index)
+		// New index is ready, it has to be saved to disk now
+		// ... if it is the root index, it's easy, just overwrite it
+		if *imageDescriptorWrapper.indexChain[i] == ref.indexPath() {
+			return saveJson(ref.indexPath(), index)
+		} else {
+			// ... in a nested index, now we need to calculate the sha, save it as a blob...
+			return ErrMoreThanOneImage
+		}
+	}
+
+	return nil
 }
 
 func saveJson(path string, content any) error {

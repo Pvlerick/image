@@ -345,16 +345,12 @@ func TestReferenceDeleteImage(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, files)
 
-	// Check that the index doesn't contain the reference anymore
+	// Check that the index is empty as there is only one image in the fixture
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
+	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	for _, v := range descriptors {
-		if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
-			assert.Fail(t, "image still present in the index after deletion")
-		}
-	}
+	require.Equal(t, 0, len(index.Manifests))
 }
 
 func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
@@ -372,16 +368,12 @@ func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, files)
 
-	// Check that the index doesn't contain the reference anymore
+	// Check that the index is empty as there is only one image in the fixture
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
+	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	for _, v := range descriptors {
-		if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ociRef.image {
-			assert.Fail(t, "image still present in the index after deletion")
-		}
-	}
+	require.Equal(t, 0, len(index.Manifests))
 }
 
 func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
