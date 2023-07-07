@@ -223,7 +223,7 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 // this allows the update of the index when an image is located in a nested (++) index
 type descriptorWrapper struct {
 	descriptor *imgspecv1.Descriptor
-	indexChain []*string //in order of appearence, so the last first should always be index.json
+	indexChain []*string //in order of appearence, the first is always be index.json and the nested indexes, last one being the one where the descriptor was found in
 }
 
 func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*descriptorWrapper, error) {
@@ -258,7 +258,7 @@ func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*descriptorWrapper
 	}
 
 	index := ref.indexPath()
-	indexChain := []*string{&index}
+	indexChain := []*string{&index} // We start the walk at the root: index.json
 	return getImageDescriptorsFromIndex(indexChain)
 }
 
@@ -369,7 +369,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	//TODO always update the index.json, so dont add it in the indexChain?
 	// Update the index
 	// ... in case of nested index(es), the index chain will be > 1
-	if len(imageDescriptorWrapper.indexChain) > 1 {
+	if len(imageDescriptorWrapper.indexChain) > 0 {
 		// Update all the nested indexes, or delete them if they are empty (two empty indexes will have the same hash)
 		//var previousIndex *string = nil
 		for i := len(imageDescriptorWrapper.indexChain) - 1; i > 0; i-- {
@@ -404,8 +404,8 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 			}
 		}
 	}
-	// ... and finally update the root index.json
-	index, err := parseIndex(*imageDescriptorWrapper.indexChain[0])
+	// ... and finally update the root index.json - imageDescriptorWrapper.indexChain[0] will hold the path to index.json too
+	index, err := ref.getIndex()
 	if err != nil {
 		return err
 	}
