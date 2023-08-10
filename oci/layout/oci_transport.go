@@ -167,7 +167,7 @@ func (ref ociReference) getIndex() (*imgspecv1.Index, error) {
 	return parseIndex(ref.indexPath())
 }
 
-func parseJson[T any](path string) (*T, error) {
+func parseJSON[T any](path string) (*T, error) {
 	content, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -182,7 +182,7 @@ func parseJson[T any](path string) (*T, error) {
 }
 
 func parseIndex(path string) (*imgspecv1.Index, error) {
-	return parseJson[imgspecv1.Index](path)
+	return parseJSON[imgspecv1.Index](path)
 }
 
 func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
@@ -269,7 +269,7 @@ func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv
 		return nil, err
 	}
 
-	manifest, err := parseJson[imgspecv1.Manifest](manifestPath)
+	manifest, err := parseJSON[imgspecv1.Manifest](manifestPath)
 	if err != nil {
 		return nil, err
 	}
@@ -351,15 +351,15 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	}
 
 	// Delete all blobs used by this image only
-	blobsToDelete := make([]digest.Digest, 0, len(manifest.Layers)+2)
+	blobsToDelete := set.New[digest.Digest]()
 	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptorWrapper.descriptor) {
 		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
-			blobsToDelete = append(blobsToDelete, descriptor.Digest)
+			blobsToDelete.Add(descriptor.Digest)
 		} else {
 			logrus.Debug("Blob ", descriptor.Digest.Hex(), " is used by another image, leaving it")
 		}
 	}
-	for _, digest := range blobsToDelete {
+	for _, digest := range blobsToDelete.Values() {
 		//TODO Check if there is shared blob path?
 		blobPath, err := ref.blobPath(digest, "")
 		if err != nil {
@@ -367,7 +367,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 		logrus.Debug("Deleting blob ", digest.Hex())
 		err = os.Remove(blobPath)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -402,7 +402,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		// New index is ready, it has to be saved to disk now
 		// ... if it is the root index, it's easy, just overwrite it
 		if indexPath == ref.indexPath() {
-			return saveJson(ref.indexPath(), index)
+			return saveJSON(ref.indexPath(), index)
 		} else {
 			indexDigest, err := digest.Parse("sha256:" + filepath.Base(indexPath))
 			if err != nil {
@@ -418,12 +418,12 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 				if err != nil {
 					return err
 				}
-				indexNewDigest := digest.SHA256.FromBytes(buffer.Bytes())
+				indexNewDigest := digest.Canonical.FromBytes(buffer.Bytes())
 				indexNewPath, err := ref.blobPath(indexNewDigest, "")
 				if err != nil {
 					return err
 				}
-				err = saveJson(indexNewPath, index)
+				err = saveJSON(indexNewPath, index)
 				if err != nil {
 					return err
 				}
@@ -440,10 +440,10 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	return nil
 }
 
-func saveJson(path string, content any) error {
+func saveJSON(path string, content any) error {
 	// If the file already exists, get its mode to preserve it
 	var mode fs.FileMode
-	existinfFileInfo, err := os.Stat(path)
+	existingfi, err := os.Stat(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -451,7 +451,7 @@ func saveJson(path string, content any) error {
 			mode = 0644
 		}
 	} else {
-		mode = existinfFileInfo.Mode()
+		mode = existingfi.Mode()
 	}
 
 	// Then write the file
