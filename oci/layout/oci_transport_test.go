@@ -3,7 +3,6 @@ package layout
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -341,7 +340,7 @@ func TestReferenceDeleteImage(t *testing.T) {
 
 	// Check that all blobs were deleted
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	files, err := ioutil.ReadDir(filepath.Join(blobsDir, "sha256"))
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
 	require.Empty(t, files)
 
@@ -364,7 +363,7 @@ func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
 
 	// Check that all blobs were deleted
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	files, err := ioutil.ReadDir(filepath.Join(blobsDir, "sha256"))
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
 	require.Empty(t, files)
 
@@ -463,10 +462,7 @@ func TestReferenceDeleteImage_someBlobsAreUsedByOtherImages(t *testing.T) {
 			otherImagesStillPresent = append(otherImagesStillPresent, true)
 		}
 	}
-	require.Equal(t, 2, len(otherImagesStillPresent))
-	for _, v := range otherImagesStillPresent {
-		require.True(t, v)
-	}
+	assert.Equal(t, []bool{true, true}, otherImagesStillPresent)
 }
 
 func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
