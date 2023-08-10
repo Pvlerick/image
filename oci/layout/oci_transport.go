@@ -220,46 +220,44 @@ func (ref ociReference) getManifestDescriptor() (imgspecv1.Descriptor, error) {
 // this allows the update of the index when an image is located in a nested (++) index
 type descriptorWrapper struct {
 	descriptor *imgspecv1.Descriptor
-	indexChain []*string //in order of appearence, the first is always be index.json and the nested indexes, last one being the one where the descriptor was found in
+	indexChain []string //in order of appearence, the first is always be index.json and the nested indexes, last one being the one where the descriptor was found in
 }
 
-// This will return all the descriptors of all the images found in the repository
+// This will return all the descriptors of all the images found in the directory
 // It starts at the index.json and then walks all nested indexes
 // Each image descriptor is returned along with the index it was found, as well as it parents if it is a nested index
-func (ref ociReference) getAllImageDescriptorsInRegistry() ([]*descriptorWrapper, error) {
-	var getImageDescriptorsFromIndex func(indexChain []*string) ([]*descriptorWrapper, error)
-	getImageDescriptorsFromIndex = func(indexChain []*string) ([]*descriptorWrapper, error) {
-		index, err := parseIndex(*indexChain[len(indexChain)-1]) // last item in the index is always the index in which whe are currently working
+func (ref ociReference) getAllImageDescriptorsInDirectory() ([]descriptorWrapper, error) {
+	descriptors := make([]descriptorWrapper, 0)
+	var getImageDescriptorsFromIndex func(indexChain []string) error
+	getImageDescriptorsFromIndex = func(indexChain []string) error {
+		index, err := parseIndex(indexChain[len(indexChain)-1]) // last item in the index is always the index in which whe are currently working
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		descriptors := make([]*descriptorWrapper, 0, len(index.Manifests))
 		for _, manifestDescriptor := range index.Manifests {
 			switch manifestDescriptor.MediaType {
 			case imgspecv1.MediaTypeImageManifest:
 				tmpManifestDescriptor := manifestDescriptor
 				wrapper := descriptorWrapper{&tmpManifestDescriptor, indexChain}
-				descriptors = append(descriptors, &wrapper)
+				descriptors = append(descriptors, wrapper)
 			case imgspecv1.MediaTypeImageIndex:
 				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "")
 				if err != nil {
-					return nil, err
+					return err
 				}
 				// recursively get manifests from this nested index
-				descriptorsFromNestedIndex, err := getImageDescriptorsFromIndex(append(indexChain, &nestedIndexBlobPath))
+				err = getImageDescriptorsFromIndex(append(indexChain, nestedIndexBlobPath))
 				if err != nil {
-					return nil, err
+					return err
 				}
-				descriptors = append(descriptors, descriptorsFromNestedIndex...)
 			}
 		}
-		return descriptors, nil
+		return nil
 	}
 
-	index := ref.indexPath()
-	indexChain := []*string{&index} // We start the walk at the root: index.json
-	return getImageDescriptorsFromIndex(indexChain)
+	err := getImageDescriptorsFromIndex([]string{ref.indexPath()}) //Start the walk at the root (index.json)
+	return descriptors, err
 }
 
 func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
@@ -305,21 +303,21 @@ type indexUpdateStep struct {
 	newDigest *digest.Digest
 }
 
-// DeleteImage deletes the named image from the registry, if supported.
+// DeleteImage deletes the named image from the directory, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
-	// Scan all the manifests in the registry:
+	// Scan all the manifests in the directory:
 	// ... collect the one that matches with the received ref
 	// ... and store all the blobs used in all other images
 	var imageDescriptorWrapper *descriptorWrapper
 	blobsUsedByOtherImages := set.New[digest.Digest]()
-	allDescriptors, err := ref.getAllImageDescriptorsInRegistry()
+	allDescriptors, err := ref.getAllImageDescriptorsInDirectory()
 	if err != nil {
 		return err
 	}
 
 	if ref.image == "" {
 		if len(allDescriptors) == 1 {
-			imageDescriptorWrapper = allDescriptors[0]
+			imageDescriptorWrapper = &allDescriptors[0]
 		} else {
 			return ErrMoreThanOneImage
 		}
@@ -327,7 +325,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		for _, v := range allDescriptors {
 			if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ref.image {
 				tmpDescriptionWrapper := v
-				imageDescriptorWrapper = tmpDescriptionWrapper
+				imageDescriptorWrapper = &tmpDescriptionWrapper
 			} else {
 				otherImageManifest, err := ref.getManifest(v.descriptor)
 				if err != nil {
@@ -376,7 +374,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 	step := indexUpdateStep{"delete", imageDescriptorWrapper.descriptor.Digest, nil}
 
 	for i := len(imageDescriptorWrapper.indexChain) - 1; i >= 0; i-- {
-		indexPath := *imageDescriptorWrapper.indexChain[i]
+		indexPath := imageDescriptorWrapper.indexChain[i]
 		index, err := parseIndex(indexPath)
 		if err != nil {
 			return err
@@ -408,7 +406,8 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 			if err != nil {
 				return err
 			}
-			// In a nested index, if the new index is empty it has to be remove, otherwise update the parent index with the new hash
+			// In a nested index, if the new index is empty it has to be remove,
+			// otherwise update the parent index with the new hash
 			if len(index.Manifests) == 0 {
 				step = indexUpdateStep{"delete", indexDigest, nil}
 			} else {
@@ -429,10 +428,13 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 				}
 				step = indexUpdateStep{"update", indexDigest, &indexNewDigest}
 			}
-			// Delete the current index; it is dangling by now as it'll either be empty or have a new hash
-			err = os.Remove(indexPath)
-			if err != nil {
-				return err
+			// Delete the current index if it is not reference anywhere else;
+			// it is dangling by now as it'll either be empty or have a new hash
+			if !blobsUsedByOtherImages.Contains(indexDigest) {
+				err = os.Remove(indexPath)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}

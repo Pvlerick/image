@@ -406,7 +406,7 @@ func TestReferenceDeleteImage_moreThanOneImageInIndex(t *testing.T) {
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
+	descriptors, err := ociRef.getAllImageDescriptorsInDirectory()
 	require.NoError(t, err)
 	otherImageStillPresent := false //This will track that other images are still there
 	for _, v := range descriptors {
@@ -449,7 +449,7 @@ func TestReferenceDeleteImage_someBlobsAreUsedByOtherImages(t *testing.T) {
 	// Check that the index doesn't contain the reference anymore
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInRegistry()
+	descriptors, err := ociRef.getAllImageDescriptorsInDirectory()
 	require.NoError(t, err)
 	otherImagesStillPresent := make([]bool, 0, 2) //This will track that other images are still there
 	for _, v := range descriptors {
