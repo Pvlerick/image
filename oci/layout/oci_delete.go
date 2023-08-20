@@ -17,6 +17,11 @@ import (
 
 // DeleteImage deletes the named image from the directory, if supported.
 func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
+	sharedBlobsDir := ""
+	if sys != nil && sys.OCISharedBlobDirPath != "" {
+		sharedBlobsDir = sys.OCISharedBlobDirPath
+	}
+
 	// Scan all the manifests in the directory:
 	// ... collect the one that matches with the received ref
 	// ... and store all the blobs used in all other images
@@ -39,7 +44,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 				tmpDescriptionWrapper := v
 				imageDescriptorWrapper = &tmpDescriptionWrapper
 			} else {
-				otherImageManifest, err := ref.getManifest(v.descriptor)
+				otherImageManifest, err := ref.getManifest(v.descriptor, sharedBlobsDir)
 				if err != nil {
 					return err
 				}
@@ -55,7 +60,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return ImageNotFoundError{ref}
 	}
 
-	manifest, err := ref.getManifest(imageDescriptorWrapper.descriptor)
+	manifest, err := ref.getManifest(imageDescriptorWrapper.descriptor, sharedBlobsDir)
 	if err != nil {
 		return err
 	}
@@ -70,15 +75,24 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 	}
 	for _, digest := range blobsToDelete.Values() {
-		//TODO Check if there is shared blob path?
-		blobPath, err := ref.blobPath(digest, "")
+		blobPath, err := ref.blobPath(digest, "") //Only delete in the local directory, not in the shared blobs path
 		if err != nil {
 			return err
 		}
-		logrus.Debug("Deleting blob ", digest.Hex())
-		err = os.Remove(blobPath)
-		if err != nil && !os.IsNotExist(err) {
-			return err
+		_, err = os.Stat(blobPath)
+		if err == nil {
+			logrus.Debug("Deleting blob ", digest.Hex())
+			err = os.Remove(blobPath)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			//
+		} else {
+			if os.IsNotExist(err) {
+				logrus.Info("Blob ", digest.Hex(), " not found in image directory; it was either previously deleted or is in the shared blobs directory")
+			} else {
+				return err
+			}
 		}
 	}
 
@@ -130,7 +144,7 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 					return err
 				}
 				indexNewDigest := digest.Canonical.FromBytes(buffer.Bytes())
-				indexNewPath, err := ref.blobPath(indexNewDigest, "")
+				indexNewPath, err := ref.blobPath(indexNewDigest, sharedBlobsDir)
 				if err != nil {
 					return err
 				}
@@ -204,7 +218,7 @@ func (ref ociReference) getAllImageDescriptorsInDirectory() ([]descriptorWrapper
 				wrapper := descriptorWrapper{&tmpManifestDescriptor, indexChain}
 				descriptors = append(descriptors, wrapper)
 			case imgspecv1.MediaTypeImageIndex:
-				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "")
+				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "") // Only scan the local directory, not the shared blobs directory
 				if err != nil {
 					return err
 				}
@@ -222,9 +236,8 @@ func (ref ociReference) getAllImageDescriptorsInDirectory() ([]descriptorWrapper
 	return descriptors, err
 }
 
-func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor) (*imgspecv1.Manifest, error) {
-	//TODO Check if there is shared blob path?
-	manifestPath, err := ref.blobPath(descriptor.Digest, "")
+func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) (*imgspecv1.Manifest, error) {
+	manifestPath, err := ref.blobPath(descriptor.Digest, sharedBlobsDir)
 	if err != nil {
 		return nil, err
 	}
