@@ -1,12 +1,11 @@
 package layout
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/containers/image/v5/internal/set"
 	"github.com/containers/image/v5/types"
@@ -22,58 +21,145 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		sharedBlobsDir = sys.OCISharedBlobDirPath
 	}
 
-	// Scan all the manifests in the directory:
-	// ... collect the one that matches with the received ref
-	// ... and store all the blobs used in all other images
-	var imageDescriptorWrapper *descriptorWrapper
-	blobsUsedByOtherImages := set.New[digest.Digest]()
-	allDescriptors, err := ref.getAllImageDescriptorsInDirectory()
+	desciptor, err := ref.getManifestDescriptor()
 	if err != nil {
 		return err
 	}
 
-	if ref.image == "" {
-		if len(allDescriptors) == 1 {
-			imageDescriptorWrapper = &allDescriptors[0]
-		} else {
-			return ErrMoreThanOneImage
-		}
-	} else {
-		for _, v := range allDescriptors {
-			if v.descriptor.Annotations[imgspecv1.AnnotationRefName] == ref.image {
-				tmpDescriptionWrapper := v
-				imageDescriptorWrapper = &tmpDescriptionWrapper
-			} else {
-				otherImageManifest, err := ref.getManifest(v.descriptor, sharedBlobsDir)
-				if err != nil {
-					return err
-				}
-				blobsUsedByOtherImages.Add(otherImageManifest.Config.Digest)
-				for _, layer := range otherImageManifest.Layers {
-					blobsUsedByOtherImages.Add(layer.Digest)
-				}
+	switch desciptor.MediaType {
+	case imgspecv1.MediaTypeImageManifest:
+		return ref.deleteSingleImage(&desciptor, sharedBlobsDir)
+	case imgspecv1.MediaTypeImageIndex:
+		return ref.deleteImageIndex(&desciptor, sharedBlobsDir)
+	default:
+		return fmt.Errorf("unsupported mediaType in index")
+	}
+}
+
+func (ref ociReference) deleteSingleImage(desciptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
+	manifest, err := ref.getManifest(desciptor, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+	blobsUsedInManifest := ref.getBlobsUsedInManifest(manifest)
+	blobsUsedInManifest[desciptor.Digest]++ // Add the current manifest to the list of blobs used by this reference
+
+	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInManifest, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+
+	err = ref.deleteBlobs(blobsToDelete)
+	if err != nil {
+		return err
+	}
+
+	return ref.deleteReferenceFromIndex()
+}
+
+func (ref ociReference) deleteImageIndex(desciptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
+	blobPath, err := ref.blobPath(desciptor.Digest, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+	index, err := parseIndex(blobPath)
+	if err != nil {
+		return err
+	}
+
+	blobsUsedInImageRefIndex, err := ref.getBlobsUsedInIndex(index, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+	blobsUsedInImageRefIndex[desciptor.Digest]++ // Add the nested index in the list of blobs used by this reference
+
+	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInImageRefIndex, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+
+	err = ref.deleteBlobs(blobsToDelete)
+	if err != nil {
+		return err
+	}
+
+	return ref.deleteReferenceFromIndex()
+}
+
+// Returns a map of digest with the usage count, so a blob that is referenced three times will have 3 in the map
+func (ref ociReference) getBlobsUsedInIndex(index *imgspecv1.Index, sharedBlobsDir string) (map[digest.Digest]int, error) {
+	blobsUsedInIndex := make(map[digest.Digest]int)
+
+	for _, desciptor := range index.Manifests {
+		blobsUsedInIndex[desciptor.Digest]++
+		switch desciptor.MediaType {
+		case imgspecv1.MediaTypeImageManifest:
+			manifest, err := ref.getManifest(&desciptor, sharedBlobsDir)
+			if err != nil {
+				return nil, err
 			}
+			for digest, count := range ref.getBlobsUsedInManifest(manifest) {
+				blobsUsedInIndex[digest] += count
+			}
+		case imgspecv1.MediaTypeImageIndex:
+			blobPath, err := ref.blobPath(desciptor.Digest, sharedBlobsDir)
+			if err != nil {
+				return nil, err
+			}
+			index, err := parseIndex(blobPath)
+			if err != nil {
+				return nil, err
+			}
+			blobsUsedInNestedIndex, err := ref.getBlobsUsedInIndex(index, sharedBlobsDir)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range blobsUsedInNestedIndex {
+				blobsUsedInIndex[k] = blobsUsedInIndex[k] + v
+			}
+		default:
+			return nil, fmt.Errorf("unsupported mediaType in index")
 		}
 	}
 
-	if ref.image != "" && imageDescriptorWrapper == nil {
-		return ImageNotFoundError{ref}
+	return blobsUsedInIndex, nil
+}
+
+func (ref ociReference) getBlobsUsedInManifest(manifest *imgspecv1.Manifest) map[digest.Digest]int {
+	blobsUsedInManifest := make(map[digest.Digest]int, 0)
+
+	blobsUsedInManifest[manifest.Config.Digest]++
+	for _, layer := range manifest.Layers {
+		blobsUsedInManifest[layer.Digest]++
 	}
 
-	manifest, err := ref.getManifest(imageDescriptorWrapper.descriptor, sharedBlobsDir)
+	return blobsUsedInManifest
+}
+
+// This takes in a map of the digest and their usage count in the manifest to be deleted
+// It will compare it to the digest usage in the root index, and return a set of the blobs that can be safely deleted
+func (ref ociReference) getBlobsToDelete(blobsUsedByDescriptorToDelete map[digest.Digest]int, sharedBlobsDir string) (*set.Set[digest.Digest], error) {
+	rootIndex, err := ref.getIndex()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	blobsUsedInRootIndex, err := ref.getBlobsUsedInIndex(rootIndex, sharedBlobsDir)
+	if err != nil {
+		return nil, err
 	}
 
-	// Delete all blobs used by this image only
 	blobsToDelete := set.New[digest.Digest]()
-	for _, descriptor := range append(manifest.Layers, manifest.Config, *imageDescriptorWrapper.descriptor) {
-		if !blobsUsedByOtherImages.Contains(descriptor.Digest) {
-			blobsToDelete.Add(descriptor.Digest)
-		} else {
-			logrus.Debug("Blob ", descriptor.Digest.Hex(), " is used by another image, leaving it")
+
+	for digest, count := range blobsUsedInRootIndex {
+		if count-blobsUsedByDescriptorToDelete[digest] == 0 {
+			blobsToDelete.Add(digest)
 		}
 	}
+
+	return blobsToDelete, nil
+}
+
+func (ref ociReference) deleteBlobs(blobsToDelete *set.Set[digest.Digest]) error {
 	for _, digest := range blobsToDelete.Values() {
 		blobPath, err := ref.blobPath(digest, "") //Only delete in the local directory, not in the shared blobs path
 		if err != nil {
@@ -86,7 +172,6 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 			if err != nil && !os.IsNotExist(err) {
 				return err
 			}
-			//
 		} else {
 			if os.IsNotExist(err) {
 				logrus.Info("Blob ", digest.Hex(), " not found in image directory; it was either previously deleted or is in the shared blobs directory")
@@ -96,76 +181,29 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		}
 	}
 
-	// This holds the step to be done on the current index, as we walk back bottom up
-	step := indexUpdateStep{"delete", imageDescriptorWrapper.descriptor.Digest, nil}
+	return nil
+}
 
-	for i := len(imageDescriptorWrapper.indexChain) - 1; i >= 0; i-- {
-		indexPath := imageDescriptorWrapper.indexChain[i]
-		index, err := parseIndex(indexPath)
-		if err != nil {
-			return err
-		}
-		// Fill new index with existing manifests except the one we are removing
-		newManifests := make([]imgspecv1.Descriptor, 0, len(index.Manifests))
-		for _, v := range index.Manifests {
-			if v.Digest == step.digest {
-				switch step.action {
-				case "delete":
-					continue
-				case "update":
-					newDescriptor := v
-					newDescriptor.Digest = *step.newDigest
-					newManifests = append(newManifests, newDescriptor)
-				}
-			} else {
-				newManifests = append(newManifests, v)
-			}
-		}
-		index.Manifests = newManifests
-
-		// New index is ready, it has to be saved to disk now
-		// ... if it is the root index, it's easy, just overwrite it
-		if indexPath == ref.indexPath() {
-			return saveJSON(ref.indexPath(), index)
-		} else {
-			indexDigest, err := digest.Parse("sha256:" + filepath.Base(indexPath))
-			if err != nil {
-				return err
-			}
-			// In a nested index, if the new index is empty it has to be remove,
-			// otherwise update the parent index with the new hash
-			if len(index.Manifests) == 0 {
-				step = indexUpdateStep{"delete", indexDigest, nil}
-			} else {
-				// Save the new file
-				buffer := new(bytes.Buffer)
-				err = json.NewEncoder(buffer).Encode(index)
-				if err != nil {
-					return err
-				}
-				indexNewDigest := digest.Canonical.FromBytes(buffer.Bytes())
-				indexNewPath, err := ref.blobPath(indexNewDigest, sharedBlobsDir)
-				if err != nil {
-					return err
-				}
-				err = saveJSON(indexNewPath, index)
-				if err != nil {
-					return err
-				}
-				step = indexUpdateStep{"update", indexDigest, &indexNewDigest}
-			}
-			// Delete the current index if it is not reference anywhere else;
-			// it is dangling by now as it'll either be empty or have a new hash
-			if !blobsUsedByOtherImages.Contains(indexDigest) {
-				err = os.Remove(indexPath)
-				if err != nil {
-					return err
-				}
-			}
-		}
+func (ref ociReference) deleteReferenceFromIndex() error {
+	index, err := ref.getIndex()
+	if err != nil {
+		return err
 	}
 
-	return nil
+	if ref.image == "" && len(index.Manifests) == 1 {
+		index.Manifests = make([]imgspecv1.Descriptor, 0)
+		return saveJSON(ref.indexPath(), index)
+	}
+
+	newDescriptors := make([]imgspecv1.Descriptor, 0, len(index.Manifests)-1)
+	for _, descriptor := range index.Manifests {
+		if descriptor.Annotations[imgspecv1.AnnotationRefName] != ref.image {
+			newDescriptors = append(newDescriptors, descriptor)
+		}
+	}
+	index.Manifests = newDescriptors
+
+	return saveJSON(ref.indexPath(), index)
 }
 
 func saveJSON(path string, content any) error {
@@ -182,7 +220,6 @@ func saveJSON(path string, content any) error {
 		mode = existingfi.Mode()
 	}
 
-	// Then write the file
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
@@ -190,50 +227,6 @@ func saveJSON(path string, content any) error {
 	defer file.Close()
 
 	return json.NewEncoder(file).Encode(content)
-}
-
-// Stores an (image) descriptor along with the index it was found in and its parents if any
-// this allows the update of the index when an image is located in a nested (++) index
-type descriptorWrapper struct {
-	descriptor *imgspecv1.Descriptor
-	indexChain []string //in order of appearence, the first is always be index.json and the nested indexes, last one being the one where the descriptor was found in
-}
-
-// This will return all the descriptors of all the images found in the directory
-// It starts at the index.json and then walks all nested indexes
-// Each image descriptor is returned along with the index it was found, as well as it parents if it is a nested index
-func (ref ociReference) getAllImageDescriptorsInDirectory() ([]descriptorWrapper, error) {
-	descriptors := make([]descriptorWrapper, 0)
-	var getImageDescriptorsFromIndex func(indexChain []string) error
-	getImageDescriptorsFromIndex = func(indexChain []string) error {
-		index, err := parseIndex(indexChain[len(indexChain)-1]) // last item in the index is always the index in which whe are currently working
-		if err != nil {
-			return err
-		}
-
-		for _, manifestDescriptor := range index.Manifests {
-			switch manifestDescriptor.MediaType {
-			case imgspecv1.MediaTypeImageManifest:
-				tmpManifestDescriptor := manifestDescriptor
-				wrapper := descriptorWrapper{&tmpManifestDescriptor, indexChain}
-				descriptors = append(descriptors, wrapper)
-			case imgspecv1.MediaTypeImageIndex:
-				nestedIndexBlobPath, err := ref.blobPath(manifestDescriptor.Digest, "") // Only scan the local directory, not the shared blobs directory
-				if err != nil {
-					return err
-				}
-				// recursively get manifests from this nested index
-				err = getImageDescriptorsFromIndex(append(indexChain, nestedIndexBlobPath))
-				if err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	err := getImageDescriptorsFromIndex([]string{ref.indexPath()}) //Start the walk at the root (index.json)
-	return descriptors, err
 }
 
 func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) (*imgspecv1.Manifest, error) {
@@ -248,10 +241,4 @@ func (ref ociReference) getManifest(descriptor *imgspecv1.Descriptor, sharedBlob
 	}
 
 	return manifest, nil
-}
-
-type indexUpdateStep struct {
-	action    string
-	digest    digest.Digest
-	newDigest *digest.Digest
 }
