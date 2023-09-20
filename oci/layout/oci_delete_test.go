@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReferenceDeleteImage(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image")
+func TestReferenceDeleteImage_onlyOneImage(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_only_one_image")
 
 	ref, err := NewReference(tmpDir, "latest")
 	require.NoError(t, err)
@@ -37,8 +37,31 @@ func TestReferenceDeleteImage(t *testing.T) {
 	require.Equal(t, 0, len(index.Manifests))
 }
 
+func TestReferenceDeleteImage_onlyOneImage_emptyImageName(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_only_one_image")
+
+	ref, err := NewReference(tmpDir, "")
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.NoError(t, err)
+
+	// Check that all blobs were deleted
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Empty(t, files)
+
+	// Check that the index is empty as there is only one image in the fixture
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	require.Equal(t, 0, len(index.Manifests))
+}
+
 func TestReferenceDeleteImage_sharedBlobDir(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image_sharedblobsdir")
+	tmpDir := loadFixture(t, "delete_image_shared_blobs_dir")
 
 	ref, err := NewReference(tmpDir, "latest")
 	require.NoError(t, err)
@@ -67,31 +90,80 @@ func TestReferenceDeleteImage_sharedBlobDir(t *testing.T) {
 	require.Equal(t, 0, len(index.Manifests))
 }
 
-func TestReferenceDeleteImage_emptyImageName(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image")
+func TestReferenceDeleteImage_multipleImages(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
 
-	ref, err := NewReference(tmpDir, "")
+	ref, err := NewReference(tmpDir, "3.17.5")
 	require.NoError(t, err)
 
 	err = ref.DeleteImage(context.Background(), nil)
 	require.NoError(t, err)
 
-	// Check that all blobs were deleted
+	// Check that the relevant blobs were deleted/preservend
 	blobsDir := filepath.Join(tmpDir, "blobs")
 	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
-	require.Empty(t, files)
+	require.Equal(t, 14, len(files))
+	blobDoesNotExist(t, blobsDir, "sha256:5b2aba4d3c27bc6493633d0ec446b25c8d0a5c9cfe99894bcdff0aee80813805")
+	blobDoesNotExist(t, blobsDir, "sha256:df11bc189adeb50dadb3291a3a7f2c34b36e0efdba0df70f2c8a2d761b215cde")
+	blobDoesNotExist(t, blobsDir, "sha256:986315a0e599fac2b80eb31db2124dab8d3de04d7ca98b254999bd913c1f73fe")
 
-	// Check that the index is empty as there is only one image in the fixture
+	// Check the index
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
+	// .. Check that the index has been reduced to the correct size
 	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	require.Equal(t, 0, len(index.Manifests))
+	require.Equal(t, 5, len(index.Manifests))
+	// .. Check that the image is not in the index anymore
+	for _, descriptor := range index.Manifests {
+		switch descriptor.Annotations[imgspecv1.AnnotationRefName] {
+		case "3.17.5":
+			assert.Fail(t, "image still present in the index after deletion")
+		default:
+			continue
+		}
+	}
 }
 
-func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image")
+func TestReferenceDeleteImage_multipleImages_blobsUsedByOtherImages(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
+
+	ref, err := NewReference(tmpDir, "3.18")
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.NoError(t, err)
+
+	// Check that the relevant blobs were deleted/preservend
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Equal(t, 17, len(files))
+	blobExists(t, blobsDir, "sha256:93cbd11a4f41467a0409b975499ae711bc6f8222de38d9f1b5a4097583195ad5")
+	blobExists(t, blobsDir, "sha256:913cf3a39d377faf89ed388ad913a318a390488c9f34c46e43424795cdabffe8")
+	blobExists(t, blobsDir, "sha256:557ac7d133b7770216a8101268640edf4e88beab1b4e1e1bfc9b1891a1cab861")
+
+	// Check the index
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	// .. Check that the index has been reduced to the correct size
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	require.Equal(t, 5, len(index.Manifests))
+	// .. Check that the image is not in the index anymore
+	for _, descriptor := range index.Manifests {
+		switch descriptor.Annotations[imgspecv1.AnnotationRefName] {
+		case "3.8":
+			assert.Fail(t, "image still present in the index after deletion")
+		default:
+			continue
+		}
+	}
+}
+
+func TestReferenceDeleteImage_multipleImages_imageDoesNotExist(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
 
 	ref, err := NewReference(tmpDir, "does-not-exist")
 	assert.NoError(t, err)
@@ -100,43 +172,8 @@ func TestReferenceDeleteImage_imageDoesNotExist(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestReferenceDeleteImage_moreThanOneImageInIndex(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image_multipleimages")
-
-	ref, err := NewReference(tmpDir, "3.2")
-	require.NoError(t, err)
-
-	err = ref.DeleteImage(context.Background(), nil)
-	require.NoError(t, err)
-
-	// Check that the relevant blobs were deleted/preservend
-	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:9a48d58d496b700f364686fbfbb2141ff5f0f25b033078a4c11fe597770b6fab") // menifest of the deleted image
-	blobDoesNotExist(t, blobsDir, "sha256:8f891520c22dc085f86a1a9aef2e1165e63e7465ae2112df6bd1d7a115a12f8e") // config of the deleted image
-	blobDoesNotExist(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545") // layer of the deleted image
-	blobExists(t, blobsDir, "sha256:f082a2f88d9405f9d583e5038c76290d10dbefdb9b2137301c1e867f6f43cff6")       // manifest of the other image present in the index
-	blobExists(t, blobsDir, "sha256:a527179158cd5cebc11c152b8637b47ce96c838ba2aa0de66d14f45cedc11423")       // config of the other image present in the index
-	blobExists(t, blobsDir, "sha256:bc584603ae5ca55d701f5134a0e5699056536885580ee929945bcbfeaf2633e6")       // layer of the other image present in the index
-
-	// Check that the index doesn't contain the reference anymore
-	ociRef, ok := ref.(ociReference)
-	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInDirectory()
-	require.NoError(t, err)
-	otherImageStillPresent := false //This will track that other images are still there
-	for _, v := range descriptors {
-		switch v.descriptor.Annotations[imgspecv1.AnnotationRefName] {
-		case ociRef.image:
-			assert.Fail(t, "image still present in the index after deletion")
-		case "3.10.2":
-			otherImageStillPresent = true
-		}
-	}
-	require.True(t, otherImageStillPresent)
-}
-
-func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImageInIndex(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image_multipleimages")
+func TestReferenceDeleteImage_multipleImages_emptyImageName(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
 
 	ref, err := NewReference(tmpDir, "")
 	require.NoError(t, err)
@@ -145,68 +182,68 @@ func TestReferenceDeleteImage_emptyImageNameButMoreThanOneImageInIndex(t *testin
 	require.Error(t, err)
 }
 
-func TestReferenceDeleteImage_someBlobsAreUsedByOtherImages(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image_sharedblobs")
+func TestReferenceDeleteImage_multipleImages_nestedIndexImage(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
 
-	ref, err := NewReference(tmpDir, "3.2")
+	ref, err := NewReference(tmpDir, "3.16.7")
 	require.NoError(t, err)
 
 	err = ref.DeleteImage(context.Background(), nil)
 	require.NoError(t, err)
 
-	// Check that the relevant blobs were deleted/preserved
+	// Check that the relevant blobs were deleted/preservend
 	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:2363edaccd5115dad0462eac535496a0b7b661311d1fb8ed7a1f51368bfa9f3a") // manifest for the image
-	blobExists(t, blobsDir, "sha256:8f891520c22dc085f86a1a9aef2e1165e63e7465ae2112df6bd1d7a115a12f8e")       // configuration, used by another image too
-	blobExists(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545")       // layer, used by another image too
-	blobDoesNotExist(t, blobsDir, "sha256:49b6418afb4ee08ba3956e4c344034c89a39ef1a451a55b44926ad9ee77e036b") // layer used by that image only
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Equal(t, 10, len(files))
+	blobDoesNotExist(t, blobsDir, "sha256:861d3c014b0e3edcf80e6221247d6b2921a4f892feb9bafe9515b9975b78c44f")
+	blobDoesNotExist(t, blobsDir, "sha256:39c524417bb4228f9fcb0aef43a680b5fd6b9f3a1df2fd50509d047e47dad8be")
+	blobDoesNotExist(t, blobsDir, "sha256:f732172ad8d2a666550fa3ec37a5153d59acc95744562ae64cf62ded46de101a")
+	blobDoesNotExist(t, blobsDir, "sha256:02ea786cb1ff44d997661886a4186cbd8a1dc466938712bf7281379209476022")
+	blobDoesNotExist(t, blobsDir, "sha256:be6036f9b6a4e120a04868c47f1b8674f58b2fe5e410cba9f585a13ca8946cf0")
+	blobDoesNotExist(t, blobsDir, "sha256:7ffdfe7d276286b39a203dcc247949cf47c91d2d5e10a53a675c0962ed9e4402")
+	blobDoesNotExist(t, blobsDir, "sha256:e2f7e0374fd6a03d9c373f4d9a0c7802045cc3ddcc1433e89d83b81fa7007242")
 
-	// Check that the index doesn't contain the reference anymore
+	// Check the index
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	descriptors, err := ociRef.getAllImageDescriptorsInDirectory()
-	require.NoError(t, err)
-	otherImagesStillPresent := make([]bool, 0, 2) //This will track that other images are still there
-	for _, v := range descriptors {
-		switch v.descriptor.Annotations[imgspecv1.AnnotationRefName] {
-		case ociRef.image:
-			assert.Fail(t, "image still present in the index after deletion")
-		case "3.10.2":
-			otherImagesStillPresent = append(otherImagesStillPresent, true)
-		case "latest":
-			otherImagesStillPresent = append(otherImagesStillPresent, true)
-		}
-	}
-	assert.Equal(t, []bool{true, true}, otherImagesStillPresent)
-}
-
-func TestReferenceDeleteImage_inNestedIndex(t *testing.T) {
-	tmpDir := loadFixture(t, "delete_image_nestedindex")
-
-	ref, err := NewReference(tmpDir, "latest")
-	require.NoError(t, err)
-
-	err = ref.DeleteImage(context.Background(), nil)
-	require.NoError(t, err)
-
-	// Check that all relevant blobs were deleted/preserved
-	blobsDir := filepath.Join(tmpDir, "blobs")
-	blobDoesNotExist(t, blobsDir, "sha256:4a6da698b869046086d0e6ba846f8b931cb33bbaa5c68025b4fd55f67a4f0513") // manifest for the image
-	blobDoesNotExist(t, blobsDir, "sha256:a527179158cd5cebc11c152b8637b47ce96c838ba2aa0de66d14f45cedc11423") // configuration for the image
-	blobDoesNotExist(t, blobsDir, "sha256:0c8b263642b51b5c1dc40fe402ae2e97119c6007b6e52146419985ec1f0092dc") // layer used by that image only
-	blobExists(t, blobsDir, "sha256:d107df792639f1ee2fc4555597cb0eec8978b07e45a68f782965fd00a8964545")       // layer used by another image in the index(es)
-
-	// Check that a few new blobs have been created after index deletion/update
-	blobDoesNotExist(t, blobsDir, "sha256:fbe294d1b627d6ee3c119d558dad8b1c4542cbc51c49ec45dd638921bc5921d0") // nested index 2 that contained the image and only that image
-	blobDoesNotExist(t, blobsDir, "sha256:b2ff1c27b718b90910711aeda5e02ebbf4440659edd589cc458b3039ea91b35f") // nested index 1, should have been renamed - see next line
-	blobExists(t, blobsDir, "sha256:13e9f5dde0af5d4303ef0e69d847bc14db6c86a7df616831e126821daf532982")       // new sha of the nested index
-
-	// Check that the index has been update with the new nestedindex's sha
-	ociRef, ok := ref.(ociReference)
-	require.True(t, ok)
+	// .. Check that the index has been reduced to the correct size
 	index, err := ociRef.getIndex()
 	require.NoError(t, err)
-	assert.Equal(t, 1, len(index.Manifests))
+	require.Equal(t, 5, len(index.Manifests))
+	// .. Check that the image is not in the index anymore
+	for _, descriptor := range index.Manifests {
+		switch descriptor.Annotations[imgspecv1.AnnotationRefName] {
+		case "3.16.7":
+			assert.Fail(t, "image still present in the index after deletion")
+		default:
+			continue
+		}
+	}
+}
+
+func TestReferenceDeleteImage_multipleImages_nestedIndexImage_refWithSameContent(t *testing.T) {
+	tmpDir := loadFixture(t, "delete_image_multiple_images")
+
+	ref, err := NewReference(tmpDir, "3.18.3")
+	require.NoError(t, err)
+
+	err = ref.DeleteImage(context.Background(), nil)
+	require.NoError(t, err)
+
+	// Check that the relevant blobs were deleted/preservend
+	blobsDir := filepath.Join(tmpDir, "blobs")
+	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
+	require.NoError(t, err)
+	require.Equal(t, 17, len(files))
+
+	// Check the index
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	// .. Check that the index has been reduced to the correct size
+	index, err := ociRef.getIndex()
+	require.NoError(t, err)
+	require.Equal(t, 5, len(index.Manifests))
 }
 
 func loadFixture(t *testing.T, fixtureName string) string {
