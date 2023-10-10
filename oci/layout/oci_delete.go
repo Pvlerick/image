@@ -21,28 +21,28 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		sharedBlobsDir = sys.OCISharedBlobDirPath
 	}
 
-	desciptor, err := ref.getManifestDescriptor()
+	descriptor, err := ref.getManifestDescriptor()
 	if err != nil {
 		return err
 	}
 
-	switch desciptor.MediaType {
+	switch descriptor.MediaType {
 	case imgspecv1.MediaTypeImageManifest:
-		return ref.deleteSingleImage(&desciptor, sharedBlobsDir)
+		return ref.deleteSingleImage(&descriptor, sharedBlobsDir)
 	case imgspecv1.MediaTypeImageIndex:
-		return ref.deleteImageIndex(&desciptor, sharedBlobsDir)
+		return ref.deleteImageIndex(&descriptor, sharedBlobsDir)
 	default:
 		return fmt.Errorf("unsupported mediaType in index")
 	}
 }
 
-func (ref ociReference) deleteSingleImage(desciptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
-	manifest, err := ref.getManifest(desciptor, sharedBlobsDir)
+func (ref ociReference) deleteSingleImage(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
+	manifest, err := ref.getManifest(descriptor, sharedBlobsDir)
 	if err != nil {
 		return err
 	}
 	blobsUsedInManifest := ref.getBlobsUsedInManifest(manifest)
-	blobsUsedInManifest[desciptor.Digest]++ // Add the current manifest to the list of blobs used by this reference
+	blobsUsedInManifest[descriptor.Digest]++ // Add the current manifest to the list of blobs used by this reference
 
 	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInManifest, sharedBlobsDir)
 	if err != nil {
@@ -57,8 +57,8 @@ func (ref ociReference) deleteSingleImage(desciptor *imgspecv1.Descriptor, share
 	return ref.deleteReferenceFromIndex()
 }
 
-func (ref ociReference) deleteImageIndex(desciptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
-	blobPath, err := ref.blobPath(desciptor.Digest, sharedBlobsDir)
+func (ref ociReference) deleteImageIndex(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
+	blobPath, err := ref.blobPath(descriptor.Digest, sharedBlobsDir)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (ref ociReference) deleteImageIndex(desciptor *imgspecv1.Descriptor, shared
 	if err != nil {
 		return err
 	}
-	blobsUsedInImageRefIndex[desciptor.Digest]++ // Add the nested index in the list of blobs used by this reference
+	blobsUsedInImageRefIndex[descriptor.Digest]++ // Add the nested index in the list of blobs used by this reference
 
 	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInImageRefIndex, sharedBlobsDir)
 	if err != nil {
@@ -90,11 +90,11 @@ func (ref ociReference) deleteImageIndex(desciptor *imgspecv1.Descriptor, shared
 func (ref ociReference) getBlobsUsedInIndex(index *imgspecv1.Index, sharedBlobsDir string) (map[digest.Digest]int, error) {
 	blobsUsedInIndex := make(map[digest.Digest]int)
 
-	for _, desciptor := range index.Manifests {
-		blobsUsedInIndex[desciptor.Digest]++
-		switch desciptor.MediaType {
+	for _, descriptor := range index.Manifests {
+		blobsUsedInIndex[descriptor.Digest]++
+		switch descriptor.MediaType {
 		case imgspecv1.MediaTypeImageManifest:
-			manifest, err := ref.getManifest(&desciptor, sharedBlobsDir)
+			manifest, err := ref.getManifest(&descriptor, sharedBlobsDir)
 			if err != nil {
 				return nil, err
 			}
@@ -102,7 +102,7 @@ func (ref ociReference) getBlobsUsedInIndex(index *imgspecv1.Index, sharedBlobsD
 				blobsUsedInIndex[digest] += count
 			}
 		case imgspecv1.MediaTypeImageIndex:
-			blobPath, err := ref.blobPath(desciptor.Digest, sharedBlobsDir)
+			blobPath, err := ref.blobPath(descriptor.Digest, sharedBlobsDir)
 			if err != nil {
 				return nil, err
 			}
