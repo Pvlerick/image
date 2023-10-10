@@ -8,7 +8,6 @@ import (
 
 	_ "github.com/containers/image/v5/internal/testing/explicitfilepath-tmpdir"
 	"github.com/containers/image/v5/types"
-	"github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -364,20 +363,4 @@ func TestReferenceBlobPathInvalid(t *testing.T) {
 	require.True(t, ok)
 	_, err := ociRef.blobPath(hex, "")
 	assert.ErrorContains(t, err, "unexpected digest reference "+hex)
-}
-
-func blobExists(t *testing.T, blobsDir string, blobDigest string) {
-	digest, err := digest.Parse(blobDigest)
-	require.NoError(t, err)
-	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
-	_, err = os.Stat(blobPath)
-	require.NoError(t, err)
-}
-
-func blobDoesNotExist(t *testing.T, blobsDir string, blobDigest string) {
-	digest, err := digest.Parse(blobDigest)
-	require.NoError(t, err)
-	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
-	_, err = os.Stat(blobPath)
-	require.True(t, os.IsNotExist(err))
 }

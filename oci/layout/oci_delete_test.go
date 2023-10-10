@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/containers/image/v5/types"
+	digest "github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	cp "github.com/otiai10/copy"
 	"github.com/stretchr/testify/assert"
@@ -251,4 +252,20 @@ func loadFixture(t *testing.T, fixtureName string) string {
 	err := cp.Copy(fmt.Sprintf("fixtures/%v/", fixtureName), tmpDir)
 	require.NoError(t, err)
 	return tmpDir
+}
+
+func blobExists(t *testing.T, blobsDir string, blobDigest string) {
+	digest, err := digest.Parse(blobDigest)
+	require.NoError(t, err)
+	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
+	_, err = os.Stat(blobPath)
+	require.NoError(t, err)
+}
+
+func blobDoesNotExist(t *testing.T, blobsDir string, blobDigest string) {
+	digest, err := digest.Parse(blobDigest)
+	require.NoError(t, err)
+	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
+	_, err = os.Stat(blobPath)
+	require.True(t, os.IsNotExist(err))
 }
