@@ -26,64 +26,61 @@ func (ref ociReference) DeleteImage(ctx context.Context, sys *types.SystemContex
 		return err
 	}
 
+	var blobsUsedByImage map[digest.Digest]int
+
 	switch descriptor.MediaType {
 	case imgspecv1.MediaTypeImageManifest:
-		return ref.deleteSingleImage(&descriptor, sharedBlobsDir)
+		blobsUsedByImage, err = ref.getBlobsUsedInSingleImage(&descriptor, sharedBlobsDir)
 	case imgspecv1.MediaTypeImageIndex:
-		return ref.deleteImageIndex(&descriptor, sharedBlobsDir)
+		blobsUsedByImage, err = ref.getBlobsUsedInImageIndex(&descriptor, sharedBlobsDir)
 	default:
-		return fmt.Errorf("unsupported mediaType in index")
+		return fmt.Errorf("unsupported mediaType in index: %q", descriptor.MediaType)
 	}
-}
-
-func (ref ociReference) deleteSingleImage(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
-	manifest, err := ref.getManifest(descriptor, sharedBlobsDir)
 	if err != nil {
 		return err
+	}
+
+	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedByImage, sharedBlobsDir)
+	if err != nil {
+		return err
+	}
+
+	err = ref.deleteBlobs(blobsToDelete)
+	if err != nil {
+		return err
+	}
+
+	return ref.deleteReferenceFromIndex()
+}
+
+func (ref ociReference) getBlobsUsedInSingleImage(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) (map[digest.Digest]int, error) {
+	manifest, err := ref.getManifest(descriptor, sharedBlobsDir)
+	if err != nil {
+		return nil, err
 	}
 	blobsUsedInManifest := ref.getBlobsUsedInManifest(manifest)
 	blobsUsedInManifest[descriptor.Digest]++ // Add the current manifest to the list of blobs used by this reference
 
-	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInManifest, sharedBlobsDir)
-	if err != nil {
-		return err
-	}
-
-	err = ref.deleteBlobs(blobsToDelete)
-	if err != nil {
-		return err
-	}
-
-	return ref.deleteReferenceFromIndex()
+	return blobsUsedInManifest, nil
 }
 
-func (ref ociReference) deleteImageIndex(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) error {
+func (ref ociReference) getBlobsUsedInImageIndex(descriptor *imgspecv1.Descriptor, sharedBlobsDir string) (map[digest.Digest]int, error) {
 	blobPath, err := ref.blobPath(descriptor.Digest, sharedBlobsDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	index, err := parseIndex(blobPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	blobsUsedInImageRefIndex, err := ref.getBlobsUsedInIndex(index, sharedBlobsDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	blobsUsedInImageRefIndex[descriptor.Digest]++ // Add the nested index in the list of blobs used by this reference
 
-	blobsToDelete, err := ref.getBlobsToDelete(blobsUsedInImageRefIndex, sharedBlobsDir)
-	if err != nil {
-		return err
-	}
-
-	err = ref.deleteBlobs(blobsToDelete)
-	if err != nil {
-		return err
-	}
-
-	return ref.deleteReferenceFromIndex()
+	return blobsUsedInImageRefIndex, nil
 }
 
 // Returns a map of digest with the usage count, so a blob that is referenced three times will have 3 in the map
@@ -118,7 +115,7 @@ func (ref ociReference) getBlobsUsedInIndex(index *imgspecv1.Index, sharedBlobsD
 				blobsUsedInIndex[k] = blobsUsedInIndex[k] + v
 			}
 		default:
-			return nil, fmt.Errorf("unsupported mediaType in index")
+			return nil, fmt.Errorf("unsupported mediaType in index: %q", descriptor.MediaType)
 		}
 	}
 
@@ -165,23 +162,29 @@ func (ref ociReference) deleteBlobs(blobsToDelete *set.Set[digest.Digest]) error
 		if err != nil {
 			return err
 		}
-		_, err = os.Stat(blobPath)
-		if err == nil {
-			logrus.Debug("Deleting blob ", digest.Hex())
-			err = os.Remove(blobPath)
-			if err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		} else {
-			if os.IsNotExist(err) {
-				logrus.Info("Blob ", digest.Hex(), " not found in image directory; it was either previously deleted or is in the shared blobs directory")
-			} else {
-				return err
-			}
+		err = deleteBlob(blobPath)
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+func deleteBlob(blobPath string) error {
+	logrus.Debug(fmt.Sprintf("Deleting blob at %q", blobPath))
+
+	err := os.Remove(blobPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logrus.Info(fmt.Sprintf("Blob at %q not found; it was either previously deleted or is in the shared blobs directory", blobPath))
+			return nil
+		} else {
+			return err
+		}
+	} else {
+		return nil
+	}
 }
 
 func (ref ociReference) deleteReferenceFromIndex() error {

@@ -105,9 +105,9 @@ func TestReferenceDeleteImage_multipleImages(t *testing.T) {
 	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
 	require.Equal(t, 16, len(files))
-	blobDoesNotExist(t, blobsDir, "sha256:5b2aba4d3c27bc6493633d0ec446b25c8d0a5c9cfe99894bcdff0aee80813805")
-	blobDoesNotExist(t, blobsDir, "sha256:df11bc189adeb50dadb3291a3a7f2c34b36e0efdba0df70f2c8a2d761b215cde")
-	blobDoesNotExist(t, blobsDir, "sha256:986315a0e599fac2b80eb31db2124dab8d3de04d7ca98b254999bd913c1f73fe")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:5b2aba4d3c27bc6493633d0ec446b25c8d0a5c9cfe99894bcdff0aee80813805")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:df11bc189adeb50dadb3291a3a7f2c34b36e0efdba0df70f2c8a2d761b215cde")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:986315a0e599fac2b80eb31db2124dab8d3de04d7ca98b254999bd913c1f73fe")
 
 	// Check the index
 	ociRef, ok := ref.(ociReference)
@@ -141,9 +141,9 @@ func TestReferenceDeleteImage_multipleImages_blobsUsedByOtherImages(t *testing.T
 	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
 	require.Equal(t, 17, len(files))
-	blobExists(t, blobsDir, "sha256:df11bc189adeb50dadb3291a3a7f2c34b36e0efdba0df70f2c8a2d761b215cde")
-	blobDoesNotExist(t, blobsDir, "sha256:0dc27f36a618c110ae851662c13283e9fbc1b5a5de003befc4bcefa5a05d2eef")
-	blobDoesNotExist(t, blobsDir, "sha256:a6f737ac2b84bc463f2ff721af39588c69646c82f79f3808236178e02e35b922")
+	assertBlobExists(t, blobsDir, "sha256:df11bc189adeb50dadb3291a3a7f2c34b36e0efdba0df70f2c8a2d761b215cde")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:0dc27f36a618c110ae851662c13283e9fbc1b5a5de003befc4bcefa5a05d2eef")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:a6f737ac2b84bc463f2ff721af39588c69646c82f79f3808236178e02e35b922")
 
 	// Check the index
 	ociRef, ok := ref.(ociReference)
@@ -197,13 +197,13 @@ func TestReferenceDeleteImage_multipleImages_nestedIndexImage(t *testing.T) {
 	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
 	require.NoError(t, err)
 	require.Equal(t, 12, len(files))
-	blobDoesNotExist(t, blobsDir, "sha256:861d3c014b0e3edcf80e6221247d6b2921a4f892feb9bafe9515b9975b78c44f")
-	blobDoesNotExist(t, blobsDir, "sha256:39c524417bb4228f9fcb0aef43a680b5fd6b9f3a1df2fd50509d047e47dad8be")
-	blobDoesNotExist(t, blobsDir, "sha256:f732172ad8d2a666550fa3ec37a5153d59acc95744562ae64cf62ded46de101a")
-	blobDoesNotExist(t, blobsDir, "sha256:02ea786cb1ff44d997661886a4186cbd8a1dc466938712bf7281379209476022")
-	blobDoesNotExist(t, blobsDir, "sha256:be6036f9b6a4e120a04868c47f1b8674f58b2fe5e410cba9f585a13ca8946cf0")
-	blobDoesNotExist(t, blobsDir, "sha256:7ffdfe7d276286b39a203dcc247949cf47c91d2d5e10a53a675c0962ed9e4402")
-	blobDoesNotExist(t, blobsDir, "sha256:e2f7e0374fd6a03d9c373f4d9a0c7802045cc3ddcc1433e89d83b81fa7007242")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:861d3c014b0e3edcf80e6221247d6b2921a4f892feb9bafe9515b9975b78c44f")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:39c524417bb4228f9fcb0aef43a680b5fd6b9f3a1df2fd50509d047e47dad8be")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:f732172ad8d2a666550fa3ec37a5153d59acc95744562ae64cf62ded46de101a")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:02ea786cb1ff44d997661886a4186cbd8a1dc466938712bf7281379209476022")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:be6036f9b6a4e120a04868c47f1b8674f58b2fe5e410cba9f585a13ca8946cf0")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:7ffdfe7d276286b39a203dcc247949cf47c91d2d5e10a53a675c0962ed9e4402")
+	assertBlobDoesNotExist(t, blobsDir, "sha256:e2f7e0374fd6a03d9c373f4d9a0c7802045cc3ddcc1433e89d83b81fa7007242")
 
 	// Check the index
 	ociRef, ok := ref.(ociReference)
@@ -254,7 +254,7 @@ func loadFixture(t *testing.T, fixtureName string) string {
 	return tmpDir
 }
 
-func blobExists(t *testing.T, blobsDir string, blobDigest string) {
+func assertBlobExists(t *testing.T, blobsDir string, blobDigest string) {
 	digest, err := digest.Parse(blobDigest)
 	require.NoError(t, err)
 	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
@@ -262,7 +262,7 @@ func blobExists(t *testing.T, blobsDir string, blobDigest string) {
 	require.NoError(t, err)
 }
 
-func blobDoesNotExist(t *testing.T, blobsDir string, blobDigest string) {
+func assertBlobDoesNotExist(t *testing.T, blobsDir string, blobDigest string) {
 	digest, err := digest.Parse(blobDigest)
 	require.NoError(t, err)
 	blobPath := filepath.Join(blobsDir, digest.Algorithm().String(), digest.Hex())
