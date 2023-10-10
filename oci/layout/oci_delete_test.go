@@ -71,17 +71,11 @@ func TestReferenceDeleteImage_sharedBlobDir(t *testing.T) {
 	err = ref.DeleteImage(context.Background(), sys)
 	require.NoError(t, err)
 
-	// Check that the only blob in the local directory was deleted
-	blobsDir := filepath.Join(tmpDir, "blobs")
-	files, err := os.ReadDir(filepath.Join(blobsDir, "sha256"))
-	require.NoError(t, err)
-	require.Empty(t, files)
-
 	// Check that the blobs in the shared blob directory are still present
 	sharedBlobsDir := filepath.Join(tmpDir, "shared_blobs")
-	files, err = os.ReadDir(filepath.Join(sharedBlobsDir, "sha256"))
+	files, err := os.ReadDir(filepath.Join(sharedBlobsDir, "sha256"))
 	require.NoError(t, err)
-	require.Equal(t, 2, len(files))
+	require.Equal(t, 3, len(files))
 
 	// Check that the index is empty as there is only one image in the fixture
 	ociRef, ok := ref.(ociReference)
