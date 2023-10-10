@@ -74,7 +74,8 @@ func (ref ociReference) getBlobsUsedInImageIndex(descriptor *imgspecv1.Descripto
 		return nil, err
 	}
 
-	blobsUsedInImageRefIndex, err := ref.getBlobsUsedInIndex(index, sharedBlobsDir)
+	blobsUsedInImageRefIndex := make(map[digest.Digest]int)
+	err = ref.getBlobsUsedInIndex(blobsUsedInImageRefIndex, index, sharedBlobsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -84,42 +85,37 @@ func (ref ociReference) getBlobsUsedInImageIndex(descriptor *imgspecv1.Descripto
 }
 
 // Returns a map of digest with the usage count, so a blob that is referenced three times will have 3 in the map
-func (ref ociReference) getBlobsUsedInIndex(index *imgspecv1.Index, sharedBlobsDir string) (map[digest.Digest]int, error) {
-	blobsUsedInIndex := make(map[digest.Digest]int)
-
+func (ref ociReference) getBlobsUsedInIndex(destination map[digest.Digest]int, index *imgspecv1.Index, sharedBlobsDir string) error {
 	for _, descriptor := range index.Manifests {
-		blobsUsedInIndex[descriptor.Digest]++
+		destination[descriptor.Digest]++
 		switch descriptor.MediaType {
 		case imgspecv1.MediaTypeImageManifest:
 			manifest, err := ref.getManifest(&descriptor, sharedBlobsDir)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			for digest, count := range ref.getBlobsUsedInManifest(manifest) {
-				blobsUsedInIndex[digest] += count
+				destination[digest] += count
 			}
 		case imgspecv1.MediaTypeImageIndex:
 			blobPath, err := ref.blobPath(descriptor.Digest, sharedBlobsDir)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			index, err := parseIndex(blobPath)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			blobsUsedInNestedIndex, err := ref.getBlobsUsedInIndex(index, sharedBlobsDir)
+			err = ref.getBlobsUsedInIndex(destination, index, sharedBlobsDir)
 			if err != nil {
-				return nil, err
-			}
-			for k, v := range blobsUsedInNestedIndex {
-				blobsUsedInIndex[k] = blobsUsedInIndex[k] + v
+				return err
 			}
 		default:
-			return nil, fmt.Errorf("unsupported mediaType in index: %q", descriptor.MediaType)
+			return fmt.Errorf("unsupported mediaType in index: %q", descriptor.MediaType)
 		}
 	}
 
-	return blobsUsedInIndex, nil
+	return nil
 }
 
 func (ref ociReference) getBlobsUsedInManifest(manifest *imgspecv1.Manifest) map[digest.Digest]int {
@@ -140,7 +136,8 @@ func (ref ociReference) getBlobsToDelete(blobsUsedByDescriptorToDelete map[diges
 	if err != nil {
 		return nil, err
 	}
-	blobsUsedInRootIndex, err := ref.getBlobsUsedInIndex(rootIndex, sharedBlobsDir)
+	blobsUsedInRootIndex := make(map[digest.Digest]int)
+	err = ref.getBlobsUsedInIndex(blobsUsedInRootIndex, rootIndex, sharedBlobsDir)
 	if err != nil {
 		return nil, err
 	}
